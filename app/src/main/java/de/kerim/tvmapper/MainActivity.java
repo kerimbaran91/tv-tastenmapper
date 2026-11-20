@@ -32,9 +32,15 @@ public class MainActivity extends Activity {
     private static final int OK = 0xFF4CD27A;
     private static final int WARN = 0xFFFFB547;
     private static final int BAD = 0xFFFF5C5C;
+    private static final int MUTED = 0xFFAAB4C0;
+    private static final int TEXT = 0xFFD0D7DE;
 
-    private TextView tvService, tvHeal, tvKey, tvLearn, tvUpdate;
-    private Button btnLearn, btnToggle, btnUpdate;
+    /** Ab Android 13 sperrt das System die Bedienungshilfe für nachinstallierte Apps oft. */
+    private static final boolean RESTRICTED = Build.VERSION.SDK_INT >= 33;
+
+    private TextView tvService, tvHeal, tvKey, tvLearn, tvUpdate, tvDiag, tvDiagTitle;
+    private Button btnLearn, btnToggle, btnUpdate, btnDiag;
+    private LinearLayout diagCard;
     private volatile Updater.Release latest;
     private volatile boolean updateBusy;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -47,21 +53,195 @@ public class MainActivity extends Activity {
         }
     };
 
-    private final BroadcastReceiver learnedReceiver = new BroadcastReceiver() {
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            onLearned();
+            if (Prefs.ACTION_LEARNED.equals(intent.getAction())) onLearned();
+            else refresh();
         }
     };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Prefs.load(this);
         setContentView(buildUi());
-        // Beim Öffnen gleich alles sicherstellen
-        Healer.ensure(this, false);
         Watchdog.schedule(this);
         checkForUpdate(false);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        IntentFilter f = new IntentFilter(Prefs.ACTION_LEARNED);
+        f.addAction(Prefs.ACTION_DIAG);
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(receiver, f, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(receiver, f);
+        }
+        // Falls die ADB-Berechtigung inzwischen erteilt wurde: Dienst gleich einschalten
+        new Thread(() -> Healer.ensure(getApplicationContext(), false)).start();
+        handler.post(ticker);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        handler.removeCallbacks(ticker);
+        try {
+            unregisterReceiver(receiver);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Fallback, falls der Dienst nicht läuft: Tasten, die hier ankommen. */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent ev) {
+        boolean firstDown = ev.getAction() == KeyEvent.ACTION_DOWN && ev.getRepeatCount() == 0;
+        if (Prefs.isDiag() && firstDown && !Healer.isRunning(this)) {
+            Diag.record(ev, "App");
+            refresh();
+        }
+        if (Prefs.isLearning() && !Prefs.ignoredForLearning(ev.getKeyCode())) {
+            if (firstDown) {
+                Prefs.saveLearned(this, ev.getKeyCode(), ev.getScanCode());
+                onLearned();
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(ev);
+    }
+
+    private void onLearned() {
+        Toast.makeText(this, "Taste gespeichert: " + Prefs.describeLearned(this), Toast.LENGTH_LONG).show();
+        refresh();
+    }
+
+    private void refresh() {
+        boolean running = Healer.isRunning(this);
+        boolean listed = Healer.isEnabledInSettings(this);
+        boolean perm = Healer.hasPermission(this);
+
+        if (running) {
+            setStatus(tvService, "Dienst: aktiv", OK);
+        } else if (listed) {
+            setStatus(tvService, "Dienst: eingeschaltet, startet gerade …", WARN);
+        } else if (RESTRICTED && !perm) {
+            setStatus(tvService, "Dienst: AUS – bei Google TV per ADB einrichten (siehe rechts)", BAD);
+        } else {
+            setStatus(tvService, "Dienst: AUS – bitte aktivieren", BAD);
+        }
+
+        if (perm) {
+            setStatus(tvHeal, "Selbstheilung: eingerichtet (läuft nach Neustart automatisch)", OK);
+        } else {
+            setStatus(tvHeal, "Selbstheilung: fehlt – einmalig ADB-Befehl nötig", WARN);
+        }
+
+        setStatus(tvKey, "TV+-Taste: " + Prefs.describeLearned(this),
+                Prefs.hasLearned(this) ? OK : WARN);
+
+        long left = Prefs.learningRemainingMs();
+        if (left > 0) {
+            tvLearn.setVisibility(View.VISIBLE);
+            tvLearn.setText("Jetzt die Xiaomi-TV+-Taste drücken … (" + ((left + 999) / 1000) + " s)");
+            btnLearn.setText("Anlernen abbrechen");
+        } else {
+            tvLearn.setVisibility(View.GONE);
+            btnLearn.setText("TV+-Taste anlernen");
+        }
+
+        btnToggle.setText(Prefs.isEnabled(this) ? "Umbelegung: AN" : "Umbelegung: AUS");
+
+        long dleft = Prefs.diagRemainingMs();
+        if (dleft > 0) {
+            diagCard.setVisibility(View.VISIBLE);
+            tvDiagTitle.setText("Tasten-Diagnose läuft (" + ((dleft + 999) / 1000)
+                    + " s) – drück jetzt die TV+-Taste");
+            tvDiag.setText(Diag.text());
+            btnDiag.setText("Diagnose beenden");
+        } else {
+            btnDiag.setText("Tasten-Diagnose");
+            if (diagCard.getVisibility() == View.VISIBLE) {
+                tvDiagTitle.setText("Diagnose beendet – letzte Tasten:");
+                tvDiag.setText(Diag.text());
+            }
+        }
+    }
+
+    private void setStatus(TextView tv, String text, int color) {
+        tv.setText("●  " + text);
+        tv.setTextColor(color);
+    }
+
+    // ---------- Aktionen ----------
+
+    private void onLearnClicked() {
+        if (Prefs.isLearning()) {
+            Prefs.stopLearning();
+        } else {
+            if (!Healer.isRunning(this)) {
+                Toast.makeText(this, "Hinweis: Dienst läuft nicht – Anlernen klappt dann evtl. nicht.",
+                        Toast.LENGTH_LONG).show();
+            }
+            Prefs.startLearning();
+        }
+        refresh();
+    }
+
+    private void onDiagClicked() {
+        if (Prefs.isDiag()) {
+            Prefs.stopDiag();
+        } else {
+            Diag.clear();
+            Prefs.startDiag();
+            diagCard.setVisibility(View.VISIBLE);
+            if (!Healer.isRunning(this)) {
+                Toast.makeText(this, "Dienst läuft nicht – es werden nur Tasten angezeigt, die bei der App ankommen.",
+                        Toast.LENGTH_LONG).show();
+            }
+        }
+        refresh();
+    }
+
+    private void onToggleClicked() {
+        Prefs.setEnabled(this, !Prefs.isEnabled(this));
+        refresh();
+    }
+
+    private void onActivateClicked() {
+        if (Healer.hasPermission(this)) {
+            new Thread(() -> {
+                boolean ok = Healer.ensure(getApplicationContext(), true);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, ok ? "Dienst wird aktiviert …" : "Aktivieren fehlgeschlagen",
+                            Toast.LENGTH_SHORT).show();
+                    refresh();
+                });
+            }).start();
+            return;
+        }
+        if (RESTRICTED) {
+            Toast.makeText(this, "Google TV sperrt das oft. Am sichersten: den ADB-Befehl rechts ausführen, "
+                    + "dann schaltet sich die App selbst ein.", Toast.LENGTH_LONG).show();
+        }
+        try {
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (Throwable t) {
+            Toast.makeText(this, "Einstellungen gesperrt – bitte ADB-Befehl verwenden (siehe rechts)",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void onTestClicked() {
+        try {
+            MapperService.sendPlayPause(this);
+            Toast.makeText(this, "Play/Pause gesendet", Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "Fehler beim Senden", Toast.LENGTH_SHORT).show();
+        }
     }
 
     // ---------- Updates ----------
@@ -86,7 +266,7 @@ public class MainActivity extends Activity {
     private void checkForUpdate(boolean manual) {
         if (updateBusy) return;
         updateBusy = true;
-        setUpdateText("Suche nach Updates …", 0xFFAAB4C0);
+        setUpdateText("Suche nach Updates …", MUTED);
         new Thread(() -> {
             try {
                 Updater.Release r = Updater.fetchLatest();
@@ -102,8 +282,8 @@ public class MainActivity extends Activity {
                 }
             } catch (Throwable t) {
                 setUpdateText(manual ? "Update-Suche fehlgeschlagen: " + t.getMessage()
-                        : "Version " + Updater.installedName(this) + " (kein Internet / GitHub nicht erreichbar)",
-                        manual ? BAD : 0xFFAAB4C0);
+                                : "Version " + Updater.installedName(this) + " (GitHub nicht erreichbar)",
+                        manual ? BAD : MUTED);
             } finally {
                 updateBusy = false;
             }
@@ -138,136 +318,12 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        IntentFilter f = new IntentFilter(Prefs.ACTION_LEARNED);
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(learnedReceiver, f, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(learnedReceiver, f);
-        }
-        handler.post(ticker);
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        handler.removeCallbacks(ticker);
-        try {
-            unregisterReceiver(learnedReceiver);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** Fallback: Anlernen auch ohne laufenden Dienst, wenn die Taste hier ankommt. */
-    @Override
-    public boolean dispatchKeyEvent(KeyEvent ev) {
-        if (Prefs.isLearning(this) && !Prefs.ignoredForLearning(ev.getKeyCode())) {
-            if (ev.getAction() == KeyEvent.ACTION_DOWN && ev.getRepeatCount() == 0) {
-                Prefs.saveLearned(this, ev.getKeyCode(), ev.getScanCode());
-                onLearned();
-            }
-            return true;
-        }
-        return super.dispatchKeyEvent(ev);
-    }
-
-    private void onLearned() {
-        Toast.makeText(this, "Taste gespeichert: " + Prefs.describeLearned(this), Toast.LENGTH_LONG).show();
-        refresh();
-    }
-
-    private void refresh() {
-        boolean running = Healer.isRunning(this);
-        boolean listed = Healer.isEnabledInSettings(this);
-        if (running) {
-            setStatus(tvService, "Dienst: aktiv", OK);
-        } else if (listed) {
-            setStatus(tvService, "Dienst: eingeschaltet, startet gerade …", WARN);
-        } else {
-            setStatus(tvService, "Dienst: AUS – bitte aktivieren", BAD);
-        }
-
-        if (Healer.hasPermission(this)) {
-            setStatus(tvHeal, "Selbstheilung: eingerichtet (läuft nach Neustart automatisch)", OK);
-        } else {
-            setStatus(tvHeal, "Selbstheilung: fehlt – einmalig ADB-Befehl nötig (siehe unten)", WARN);
-        }
-
-        setStatus(tvKey, "TV+-Taste: " + Prefs.describeLearned(this),
-                Prefs.hasLearned(this) ? OK : WARN);
-
-        long left = Prefs.learningRemainingMs(this);
-        if (left > 0) {
-            tvLearn.setVisibility(View.VISIBLE);
-            tvLearn.setText("Jetzt die Xiaomi-TV+-Taste drücken … (" + ((left + 999) / 1000) + " s)");
-            btnLearn.setText("Anlernen abbrechen");
-        } else {
-            tvLearn.setVisibility(View.GONE);
-            btnLearn.setText("TV+-Taste anlernen");
-        }
-
-        btnToggle.setText(Prefs.isEnabled(this) ? "Umbelegung: AN" : "Umbelegung: AUS");
-    }
-
-    private void setStatus(TextView tv, String text, int color) {
-        tv.setText("●  " + text);
-        tv.setTextColor(color);
-    }
-
-    // ---------- Aktionen ----------
-
-    private void onLearnClicked() {
-        if (Prefs.isLearning(this)) {
-            Prefs.stopLearning(this);
-        } else {
-            if (!Healer.isRunning(this)) {
-                Toast.makeText(this, "Hinweis: Dienst läuft nicht – Anlernen klappt dann evtl. nicht.",
-                        Toast.LENGTH_LONG).show();
-            }
-            Prefs.startLearning(this);
-        }
-        refresh();
-    }
-
-    private void onToggleClicked() {
-        Prefs.setEnabled(this, !Prefs.isEnabled(this));
-        refresh();
-    }
-
-    private void onActivateClicked() {
-        if (Healer.hasPermission(this)) {
-            new Thread(() -> {
-                boolean ok = Healer.ensure(getApplicationContext(), true);
-                runOnUiThread(() -> {
-                    Toast.makeText(this, ok ? "Dienst wird aktiviert …" : "Aktivieren fehlgeschlagen",
-                            Toast.LENGTH_SHORT).show();
-                    refresh();
-                });
-            }).start();
-            return;
-        }
-        try {
-            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            Toast.makeText(this, "„TV-Tastenmapper“ auswählen und einschalten", Toast.LENGTH_LONG).show();
-        } catch (Throwable t) {
-            Toast.makeText(this, "Einstellungen gesperrt – bitte ADB-Befehl verwenden (siehe unten)",
-                    Toast.LENGTH_LONG).show();
-        }
-    }
-
-    private void onTestClicked() {
-        try {
-            MapperService.sendPlayPause(this);
-            Toast.makeText(this, "Play/Pause gesendet", Toast.LENGTH_SHORT).show();
-        } catch (Throwable t) {
-            Toast.makeText(this, "Fehler beim Senden", Toast.LENGTH_SHORT).show();
-        }
-    }
-
     // ---------- Oberfläche ----------
+
+    private static String deviceLine() {
+        String model = (Build.MANUFACTURER + " " + Build.MODEL).trim();
+        return model + "  ·  Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")";
+    }
 
     private View buildUi() {
         ScrollView scroll = new ScrollView(this);
@@ -279,15 +335,16 @@ public class MainActivity extends Activity {
         root.setPadding(dp(48), dp(32), dp(48), dp(32));
         scroll.addView(root);
 
-        // Linke Spalte: Status + Knöpfe
+        // ---- Linke Spalte: Status + Knöpfe ----
         LinearLayout left = column();
         root.addView(left, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView title = text("TV-Tastenmapper", 30, Color.WHITE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         left.addView(title);
-        left.addView(text("Xiaomi-TV+-Taste  →  Play/Pause", 18, 0xFFAAB4C0));
-        left.addView(space(20));
+        left.addView(text("Xiaomi-TV+-Taste  →  Play/Pause", 18, MUTED));
+        left.addView(text(deviceLine(), 14, MUTED));
+        left.addView(space(16));
 
         LinearLayout statusCard = card();
         tvService = text("", 17, Color.WHITE);
@@ -307,21 +364,40 @@ public class MainActivity extends Activity {
         left.addView(tvLearn);
 
         btnLearn = button("TV+-Taste anlernen", v -> onLearnClicked());
+        btnDiag = button("Tasten-Diagnose", v -> onDiagClicked());
         btnToggle = button("Umbelegung: AN", v -> onToggleClicked());
         Button btnActivate = button("Dienst aktivieren", v -> onActivateClicked());
         Button btnTest = button("Play/Pause testen", v -> onTestClicked());
         left.addView(btnLearn);
+        left.addView(btnDiag);
         left.addView(btnToggle);
         left.addView(btnActivate);
         left.addView(btnTest);
 
+        // Diagnose-Anzeige
+        left.addView(space(12));
+        diagCard = card();
+        tvDiagTitle = text("", 16, ACCENT);
+        tvDiagTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        tvDiag = text("", 14, TEXT);
+        tvDiag.setTypeface(Typeface.MONOSPACE);
+        diagCard.addView(tvDiagTitle);
+        diagCard.addView(space(6));
+        diagCard.addView(tvDiag);
+        diagCard.addView(space(6));
+        diagCard.addView(text("[Dienst] = kommt beim Dienst an → lässt sich umbelegen.\n"
+                + "Erscheint bei TV+ gar nichts, fängt das System die Taste vorher ab.", 13, MUTED));
+        diagCard.setVisibility(View.GONE);
+        left.addView(diagCard);
+
+        // Updates
         left.addView(space(20));
         LinearLayout updCard = card();
         TextView uh = text("Updates", 18, Color.WHITE);
         uh.setTypeface(Typeface.DEFAULT_BOLD);
         updCard.addView(uh);
         updCard.addView(space(6));
-        tvUpdate = text("Version " + Updater.installedName(this), 16, 0xFFAAB4C0);
+        tvUpdate = text("Version " + Updater.installedName(this), 16, MUTED);
         updCard.addView(tvUpdate);
         left.addView(updCard);
         btnUpdate = button("Nach Updates suchen", v -> onUpdateClicked());
@@ -329,34 +405,36 @@ public class MainActivity extends Activity {
 
         root.addView(space(32), new LinearLayout.LayoutParams(dp(32), 1));
 
-        // Rechte Spalte: Anleitung
+        // ---- Rechte Spalte: Anleitung ----
         LinearLayout right = card();
         root.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        TextView h = text("Einrichtung (einmalig)", 20, Color.WHITE);
+        TextView h = text(RESTRICTED ? "Einrichtung für Google TV (einmalig)" : "Einrichtung (einmalig)", 20, Color.WHITE);
         h.setTypeface(Typeface.DEFAULT_BOLD);
         right.addView(h);
         right.addView(space(8));
         String pkg = getPackageName();
-        right.addView(text(
-                "1. „Dienst aktivieren“ drücken und den TV-Tastenmapper einschalten.\n\n"
-                        + "2. Für die Selbstheilung nach Neustarts einmalig per ADB (z. B. Termux):\n", 15, 0xFFD0D7DE));
-        TextView cmd = text(
-                "adb connect <IP-des-Sticks>\n"
-                        + "adb shell pm grant " + pkg + " android.permission.WRITE_SECURE_SETTINGS", 14, OK);
-        cmd.setTypeface(Typeface.MONOSPACE);
-        cmd.setTextIsSelectable(false);
-        right.addView(cmd);
-        right.addView(text(
-                "\nDanach schaltet sich die App selbst ein – auch wenn die Bedienungshilfe-Einstellungen gesperrt sind.\n\n"
-                        + "3. „TV+-Taste anlernen“ drücken, dann die TV+-Taste auf der Fernbedienung.\n\n"
-                        + "Fertig. Die App muss danach nicht mehr geöffnet werden.\n\n"
-                        + "Updates: Falls das Installieren nicht erlaubt ist, einmalig per ADB:\n", 15, 0xFFD0D7DE));
-        TextView cmd2 = text("adb shell appops set " + pkg + " REQUEST_INSTALL_PACKAGES allow", 14, OK);
-        cmd2.setTypeface(Typeface.MONOSPACE);
-        right.addView(cmd2);
+
+        right.addView(text(RESTRICTED
+                ? "Google TV sperrt die Bedienungshilfe für nachinstallierte Apps. Deshalb läuft die Einrichtung über ADB "
+                + "(z. B. mit Termux auf dem Handy):\n"
+                : "1. „Dienst aktivieren“ drücken und den TV-Tastenmapper einschalten.\n\n"
+                + "2. Für die Selbstheilung nach Neustarts einmalig per ADB (z. B. Termux):\n", 15, TEXT));
+        right.addView(mono("adb connect <IP-des-Sticks>\n"
+                + "adb shell pm grant " + pkg + " android.permission.WRITE_SECURE_SETTINGS\n"
+                + "adb shell appops set " + pkg + " REQUEST_INSTALL_PACKAGES allow"));
+        right.addView(text("\nDanach diese App einmal öffnen – sie schaltet ihren Dienst selbst ein "
+                + "und hält ihn nach jedem Neustart und Update aktiv.\n\n"
+                + "Dann: „Tasten-Diagnose“ drücken und TV+ drücken. Steht dort [Dienst], klappt die Umbelegung.\n\n"
+                + "Zum Schluss „TV+-Taste anlernen“ und TV+ drücken. Fertig – die App muss danach nicht mehr geöffnet werden.", 15, TEXT));
 
         btnLearn.post(btnLearn::requestFocus);
         return scroll;
+    }
+
+    private TextView mono(String s) {
+        TextView t = text(s, 14, OK);
+        t.setTypeface(Typeface.MONOSPACE);
+        return t;
     }
 
     private LinearLayout column() {

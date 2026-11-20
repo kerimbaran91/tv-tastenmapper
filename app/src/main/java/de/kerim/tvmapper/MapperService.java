@@ -21,6 +21,10 @@ public class MapperService extends AccessibilityService {
     protected void onServiceConnected() {
         running = true;
         try {
+            Prefs.load(this);
+        } catch (Throwable ignored) {
+        }
+        try {
             AccessibilityServiceInfo info = getServiceInfo();
             if (info != null) {
                 info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
@@ -37,35 +41,57 @@ public class MapperService extends AccessibilityService {
     @Override
     protected boolean onKeyEvent(KeyEvent event) {
         try {
-            return handle(event);
+            // Schneller Durchlauf: alle fremden Tasten sofort zurückgeben (nur Speicherzugriff).
+            // So reagieren Steuerkreuz und Lautstärke ohne spürbare Verzögerung.
+            if (Prefs.learnUntil == 0 && Prefs.diagUntil == 0) {
+                if (!Prefs.enabled || !Prefs.matches(event.getKeyCode(), event.getScanCode())) {
+                    return false;
+                }
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    sendPlayPause(this);
+                }
+                return true; // Taste (Drücken, Halten, Loslassen) komplett schlucken
+            }
+            return handleSpecial(event);
         } catch (Throwable t) {
             return false; // im Zweifel Taste normal durchlassen
         }
     }
 
-    private boolean handle(KeyEvent ev) {
+    /** Anlern- und Diagnose-Modus (nur wenn in der App gestartet). */
+    private boolean handleSpecial(KeyEvent ev) {
         int code = ev.getKeyCode();
-        int scan = ev.getScanCode();
         boolean firstDown = ev.getAction() == KeyEvent.ACTION_DOWN && ev.getRepeatCount() == 0;
 
-        // Anlern-Modus: erste passende Taste merken
-        if (Prefs.isLearning(this)) {
+        if (Prefs.isDiag()) {
+            if (firstDown) {
+                Diag.record(ev, "Dienst");
+                notifyApp(Prefs.ACTION_DIAG);
+            }
+            return false; // Diagnose ändert nichts, Tasten gehen normal weiter
+        }
+        Prefs.stopDiag();
+
+        if (Prefs.isLearning()) {
             if (Prefs.ignoredForLearning(code)) return false;
             if (firstDown) {
-                Prefs.saveLearned(this, code, scan);
-                try {
-                    sendBroadcast(new Intent(Prefs.ACTION_LEARNED).setPackage(getPackageName()));
-                } catch (Throwable ignored) {
-                }
+                Prefs.saveLearned(this, code, ev.getScanCode());
+                notifyApp(Prefs.ACTION_LEARNED);
             }
             return true;
         }
+        Prefs.stopLearning();
 
-        if (!Prefs.isEnabled(this)) return false;
-        if (!Prefs.matches(this, code, scan)) return false;
-
+        if (!Prefs.enabled || !Prefs.matches(code, ev.getScanCode())) return false;
         if (firstDown) sendPlayPause(this);
-        return true; // Taste (Drücken, Halten, Loslassen) komplett schlucken
+        return true;
+    }
+
+    private void notifyApp(String action) {
+        try {
+            sendBroadcast(new Intent(action).setPackage(getPackageName()));
+        } catch (Throwable ignored) {
+        }
     }
 
     static void sendPlayPause(Context c) {

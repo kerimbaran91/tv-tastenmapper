@@ -7,6 +7,10 @@ Belegt die **Xiaomi-TV+-Taste** der Fernbedienung (Xiaomi TV Stick) auf **Play/P
 - **Selbstheilung**: Mit der einmalig per ADB erteilten Berechtigung `WRITE_SECURE_SETTINGS` schaltet die App ihren Dienst selbst wieder ein
 - Prüfung nach jedem Neustart und App-Update, zusätzlich alle 15 Minuten
 
+## Zielgerät
+Xiaomi TV Stick 4K (2nd Gen) mit Google TV / Android 14. Google TV sperrt die Bedienungshilfe für
+nachinstallierte Apps – deshalb erfolgt die Einrichtung per ADB; die App schaltet ihren Dienst dann selbst ein.
+
 ## Einrichtung mit Termux (Samsung S23)
 
 1. **Am Stick:** Einstellungen → Geräteeinstellungen → Info → 7× auf „Build“ tippen.
@@ -22,11 +26,14 @@ Belegt die **Xiaomi-TV+-Taste** der Fernbedienung (Xiaomi TV Stick) auf **Play/P
    ```
    adb install -r ~/storage/downloads/TV-Tastenmapper.apk
    ```
-4. **Selbstheilung freischalten:**
+4. **Selbstheilung und Updates freischalten:**
    ```
    adb shell pm grant de.kerim.tvmapper android.permission.WRITE_SECURE_SETTINGS
+   adb shell appops set de.kerim.tvmapper REQUEST_INSTALL_PACKAGES allow
    ```
-5. App am Stick öffnen → **Dienst aktivieren** → **TV+-Taste anlernen** → TV+ drücken. Fertig.
+5. App am Stick öffnen (schaltet den Dienst selbst ein) → **Tasten-Diagnose** → TV+ drücken.
+   Steht dort `[Dienst]`, lässt sich die Taste umbelegen.
+6. **TV+-Taste anlernen** → TV+ drücken. Fertig.
 
 ## Updates
 In der App unter **Updates** → „Nach Updates suchen“. Die App holt die neueste Version von GitHub und öffnet den Installer.
