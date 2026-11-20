@@ -1,0 +1,60 @@
+name: APK bauen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Signatur-Schlüssel bereitstellen
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: echo "$KEYSTORE_B64" | base64 -d > app/release.jks
+
+      - name: APK bauen
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: gradle --no-daemon assembleRelease
+
+      - name: APK umbenennen
+        run: cp app/build/outputs/apk/release/app-release.apk TV-Tastenmapper.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TV-Tastenmapper
+          path: TV-Tastenmapper.apk
+
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.0-build${{ github.run_number }}"
+          gh release create "$TAG" TV-Tastenmapper.apk --title "TV-Tastenmapper $TAG" --notes "Automatisch gebaut" --latest
+
+      - name: APK in Branch 'apk' ablegen
+        run: |
+          mkdir /tmp/out && cp TV-Tastenmapper.apk /tmp/out/
+          cd /tmp/out
+          git init -q -b apk
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add TV-Tastenmapper.apk
+          git commit -q -m "APK build ${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" apk

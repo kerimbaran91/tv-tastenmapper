@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TV-Tastenmapper</string>
+    <string name="service_label">TV-Tastenmapper</string>
+    <string name="service_desc">Belegt die Xiaomi-TV+-Taste der Fernbedienung auf Play/Pause um. Die App liest keine Bildschirminhalte.</string>
+</resources>
