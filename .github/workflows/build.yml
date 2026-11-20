@@ -24,13 +24,11 @@ jobs:
           gradle-version: '8.7'
 
       - name: Signatur-Schlüssel bereitstellen
-        env:
-          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-        run: echo "$KEYSTORE_B64" | base64 -d > app/release.jks
+        run: cp signing/release.jks app/release.jks
 
       - name: APK bauen
         env:
-          KS_PASS: ${{ secrets.KEYSTORE_PASS }}
+          KS_PASS: K463d636ec3e68698c95599d7adaa5d6b
         run: gradle --no-daemon assembleRelease
 
       - name: APK umbenennen
