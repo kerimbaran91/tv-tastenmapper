@@ -3,6 +3,8 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Wird einmalig per ADB erteilt: erlaubt der App, ihren Dienst selbst wieder einzuschalten -->
     <uses-permission
         android:name="android.permission.WRITE_SECURE_SETTINGS"
@@ -47,6 +49,10 @@
             android:name=".Watchdog"
             android:exported="false"
             android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <receiver
+            android:name=".InstallReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".BootReceiver"

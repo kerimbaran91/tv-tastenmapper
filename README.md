@@ -28,5 +28,12 @@ Belegt die **Xiaomi-TV+-Taste** der Fernbedienung (Xiaomi TV Stick) auf **Play/P
    ```
 5. App am Stick öffnen → **Dienst aktivieren** → **TV+-Taste anlernen** → TV+ drücken. Fertig.
 
+## Updates
+In der App unter **Updates** → „Nach Updates suchen“. Die App holt die neueste Version von GitHub und öffnet den Installer.
+Falls die Installation nicht erlaubt ist, einmalig:
+```
+adb shell appops set de.kerim.tvmapper REQUEST_INSTALL_PACKAGES allow
+```
+
 ## Build
 GitHub Actions baut bei jedem Push die signierte APK (Release + Branch `apk`).

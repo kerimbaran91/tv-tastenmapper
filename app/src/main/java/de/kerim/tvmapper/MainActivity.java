@@ -33,8 +33,10 @@ public class MainActivity extends Activity {
     private static final int WARN = 0xFFFFB547;
     private static final int BAD = 0xFFFF5C5C;
 
-    private TextView tvService, tvHeal, tvKey, tvLearn;
-    private Button btnLearn, btnToggle;
+    private TextView tvService, tvHeal, tvKey, tvLearn, tvUpdate;
+    private Button btnLearn, btnToggle, btnUpdate;
+    private volatile Updater.Release latest;
+    private volatile boolean updateBusy;
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     private final Runnable ticker = new Runnable() {
@@ -59,6 +61,81 @@ public class MainActivity extends Activity {
         // Beim Öffnen gleich alles sicherstellen
         Healer.ensure(this, false);
         Watchdog.schedule(this);
+        checkForUpdate(false);
+    }
+
+    // ---------- Updates ----------
+
+    private void setUpdateText(String s, int color) {
+        runOnUiThread(() -> {
+            tvUpdate.setText(s);
+            tvUpdate.setTextColor(color);
+        });
+    }
+
+    private void onUpdateClicked() {
+        if (updateBusy) return;
+        Updater.Release r = latest;
+        if (r != null && r.build > Updater.installedBuild(this)) {
+            installUpdate(r);
+        } else {
+            checkForUpdate(true);
+        }
+    }
+
+    private void checkForUpdate(boolean manual) {
+        if (updateBusy) return;
+        updateBusy = true;
+        setUpdateText("Suche nach Updates …", 0xFFAAB4C0);
+        new Thread(() -> {
+            try {
+                Updater.Release r = Updater.fetchLatest();
+                latest = r;
+                int installed = Updater.installedBuild(this);
+                if (r.build > installed) {
+                    setUpdateText("Neue Version " + r.name + " verfügbar (installiert: "
+                            + Updater.installedName(this) + ")", WARN);
+                    runOnUiThread(() -> btnUpdate.setText("Update auf " + r.name + " installieren"));
+                } else {
+                    setUpdateText("Version " + Updater.installedName(this) + " ist aktuell", OK);
+                    runOnUiThread(() -> btnUpdate.setText("Nach Updates suchen"));
+                }
+            } catch (Throwable t) {
+                setUpdateText(manual ? "Update-Suche fehlgeschlagen: " + t.getMessage()
+                        : "Version " + Updater.installedName(this) + " (kein Internet / GitHub nicht erreichbar)",
+                        manual ? BAD : 0xFFAAB4C0);
+            } finally {
+                updateBusy = false;
+            }
+        }).start();
+    }
+
+    private void installUpdate(Updater.Release r) {
+        if (!Updater.canInstall(this)) {
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        android.net.Uri.parse("package:" + getPackageName()))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                Toast.makeText(this, "Bitte „Installation erlauben“ einschalten, dann zurück und erneut drücken",
+                        Toast.LENGTH_LONG).show();
+            } catch (Throwable t) {
+                setUpdateText("Installation nicht erlaubt – bitte einmalig per ADB freigeben (siehe rechts)", BAD);
+            }
+            return;
+        }
+        updateBusy = true;
+        setUpdateText("Lade Version " + r.name + " herunter …", ACCENT);
+        new Thread(() -> {
+            try {
+                Updater.downloadAndInstall(getApplicationContext(), r,
+                        pct -> setUpdateText("Lade Version " + r.name + " herunter … " + pct + " %", ACCENT));
+                setUpdateText("Download fertig – bitte „Installieren“ bestätigen", OK);
+            } catch (Throwable t) {
+                setUpdateText("Update fehlgeschlagen: " + t.getMessage(), BAD);
+            } finally {
+                updateBusy = false;
+            }
+        }).start();
     }
 
     @Override
@@ -238,6 +315,18 @@ public class MainActivity extends Activity {
         left.addView(btnActivate);
         left.addView(btnTest);
 
+        left.addView(space(20));
+        LinearLayout updCard = card();
+        TextView uh = text("Updates", 18, Color.WHITE);
+        uh.setTypeface(Typeface.DEFAULT_BOLD);
+        updCard.addView(uh);
+        updCard.addView(space(6));
+        tvUpdate = text("Version " + Updater.installedName(this), 16, 0xFFAAB4C0);
+        updCard.addView(tvUpdate);
+        left.addView(updCard);
+        btnUpdate = button("Nach Updates suchen", v -> onUpdateClicked());
+        left.addView(btnUpdate);
+
         root.addView(space(32), new LinearLayout.LayoutParams(dp(32), 1));
 
         // Rechte Spalte: Anleitung
@@ -260,7 +349,11 @@ public class MainActivity extends Activity {
         right.addView(text(
                 "\nDanach schaltet sich die App selbst ein – auch wenn die Bedienungshilfe-Einstellungen gesperrt sind.\n\n"
                         + "3. „TV+-Taste anlernen“ drücken, dann die TV+-Taste auf der Fernbedienung.\n\n"
-                        + "Fertig. Die App muss danach nicht mehr geöffnet werden.", 15, 0xFFD0D7DE));
+                        + "Fertig. Die App muss danach nicht mehr geöffnet werden.\n\n"
+                        + "Updates: Falls das Installieren nicht erlaubt ist, einmalig per ADB:\n", 15, 0xFFD0D7DE));
+        TextView cmd2 = text("adb shell appops set " + pkg + " REQUEST_INSTALL_PACKAGES allow", 14, OK);
+        cmd2.setTypeface(Typeface.MONOSPACE);
+        right.addView(cmd2);
 
         btnLearn.post(btnLearn::requestFocus);
         return scroll;

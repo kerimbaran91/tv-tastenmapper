@@ -43,8 +43,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="v1.0-build${{ github.run_number }}"
-          gh release create "$TAG" TV-Tastenmapper.apk --title "TV-Tastenmapper $TAG" --notes "Automatisch gebaut" --latest
+          TAG="v1.${{ github.run_number }}"
+          gh release create "$TAG" TV-Tastenmapper.apk --title "TV-Tastenmapper $TAG" --notes "Automatisch gebaut (Build ${{ github.run_number }})" --latest
 
       - name: APK in Branch 'apk' ablegen
         run: |
