@@ -168,15 +168,18 @@ final class AdbClient {
                 write(sout, A_OPEN, localId, 0, ("shell:" + command + "\0").getBytes(StandardCharsets.UTF_8));
                 ByteArrayOutputStream output = new ByteArrayOutputStream();
                 int remoteId = 0;
+                boolean opened = false;
                 while (true) {
                     m = read(sin);
                     if (m.cmd == A_OKAY) {
                         remoteId = m.arg0;
+                        opened = true;
                     } else if (m.cmd == A_WRTE) {
                         if (output.size() < 64 * 1024) output.write(m.data, 0, m.data.length);
                         write(sout, A_OKAY, localId, m.arg0, new byte[0]);
                     } else if (m.cmd == A_CLSE) {
-                        if (remoteId != 0) write(sout, A_CLSE, localId, remoteId, new byte[0]);
+                        if (!opened) throw new Exception("ADB hat den Shell-Befehl abgelehnt");
+                        write(sout, A_CLSE, localId, remoteId, new byte[0]);
                         break;
                     }
                 }

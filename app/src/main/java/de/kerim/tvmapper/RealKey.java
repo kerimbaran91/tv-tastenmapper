@@ -194,25 +194,30 @@ final class RealKey {
                 }
 
                 AdbKey key = AdbKey.load(c);
-                String apk = c.getApplicationInfo().sourceDir;
-                String cmd = "CLASSPATH=" + apk + " setsid app_process /system/bin "
+                String pkg = c.getPackageName();
+                // Genau der Befehl, der in Termux funktioniert hat – plus 2 s warten und Port prüfen,
+                // damit sich das Hilfsprogramm sauber von der ADB-Sitzung löst.
+                String cmd = "CLASSPATH=$(pm path " + pkg + " | head -1 | cut -d: -f2) setsid app_process /system/bin "
                         + InjectServer.class.getName() + " " + token(c) + " " + PORT + " " + version(c)
-                        + " </dev/null >/dev/null 2>&1 &";
+                        + " </dev/null >/dev/null 2>&1 & sleep 2; "
+                        + "if grep -qi ':" + String.format("%04X", PORT) + " ' /proc/net/tcp /proc/net/tcp6; "
+                        + "then echo PORT_OFFEN; else echo PORT_ZU; fi";
                 String host = (String) target[0];
                 int port = (Integer) target[1];
+                String output;
                 try {
-                    AdbClient.shell(key, host, port, cmd);
+                    output = AdbClient.shell(key, host, port, cmd);
                 } catch (Throwable first) {
                     if (!"127.0.0.1".equals(host)) {
-                        AdbClient.shell(key, "127.0.0.1", port, cmd);
+                        output = AdbClient.shell(key, "127.0.0.1", port, cmd);
                     } else {
                         throw first;
                     }
                 }
+                output = output == null ? "" : output.trim();
 
                 // Warten, bis es antwortet
                 for (int i = 0; i < 20; i++) {
-                    Thread.sleep(300);
                     synchronized (lock) {
                         String v = connect(c);
                         if (v != null && v.equals(version(c))) {
@@ -221,8 +226,17 @@ final class RealKey {
                             return true;
                         }
                     }
+                    Thread.sleep(300);
                 }
-                status = "Hilfsprogramm startet nicht";
+                if (output.contains("PORT_OFFEN")) {
+                    status = "Hilfsprogramm läuft, aber die App kann sich nicht verbinden";
+                } else if (output.contains("PORT_ZU")) {
+                    status = "Hilfsprogramm startet nicht (Port bleibt zu)";
+                } else if (output.isEmpty()) {
+                    status = "ADB-Befehl ohne Antwort";
+                } else {
+                    status = "Hilfsprogramm startet nicht: " + (output.length() > 120 ? output.substring(0, 120) : output);
+                }
                 return false;
             } catch (Throwable t) {
                 active = false;
