@@ -6,21 +6,28 @@ import android.content.SharedPreferences;
 import android.provider.Settings;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Echte Play/Pause-Taste: verwaltet das Hilfsprogramm (InjectServer).
  * - startet es bei Bedarf über ADB („Debugging über WLAN“, wird selbst eingeschaltet)
  * - hält eine Verbindung offen, damit der Tastendruck ohne Verzögerung ankommt
+ * - sendet einen Druck nie doppelt
  */
 final class RealKey {
     static final int PORT = 47811;
     static final int KEYCODE_MEDIA_PLAY_PAUSE = 85;
+
+    private static final String PREFS = "realkey";
+    private static final long REFRESH_INTERVAL_MS = 20L * 60 * 60 * 1000; // ADB-Freigabe ca. täglich auffrischen
 
     static volatile String status = "noch nicht geprüft";
     static volatile boolean active = false;
@@ -30,25 +37,44 @@ final class RealKey {
     private static BufferedReader in;
     private static OutputStream out;
     private static volatile long lastStartAttempt = 0;
+    private static volatile long lastEnsureFail = 0;
 
     private RealKey() {}
 
+    private static SharedPreferences sp(Context c) {
+        return c.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static final Object tokenLock = new Object(); // eigenes Schloss, verhindert Verklemmungen
+    private static volatile String cachedToken;
+
+    /** Geheimes Passwort für das Hilfsprogramm (einmal erzeugt, danach fest). */
     private static String token(Context c) {
-        SharedPreferences p = c.getApplicationContext().getSharedPreferences("realkey", Context.MODE_PRIVATE);
-        String t = p.getString("token", null);
-        if (t == null) {
-            byte[] b = new byte[16];
-            new SecureRandom().nextBytes(b);
-            StringBuilder sb = new StringBuilder();
-            for (byte x : b) sb.append(String.format("%02x", x));
-            t = sb.toString();
-            p.edit().putString("token", t).commit();
+        String t = cachedToken;
+        if (t != null) return t;
+        synchronized (tokenLock) {
+            if (cachedToken != null) return cachedToken;
+            SharedPreferences p = sp(c);
+            t = p.getString("token", null);
+            if (t == null) {
+                byte[] b = new byte[16];
+                new SecureRandom().nextBytes(b);
+                StringBuilder sb = new StringBuilder();
+                for (byte x : b) sb.append(String.format("%02x", x));
+                t = sb.toString();
+                p.edit().putString("token", t).commit();
+            }
+            cachedToken = t;
+            return t;
         }
-        return t;
     }
 
     private static String version(Context c) {
         return String.valueOf(Updater.installedBuild(c));
+    }
+
+    private static void markAdbUsed(Context c) {
+        sp(c).edit().putLong("last_adb", System.currentTimeMillis()).apply();
     }
 
     // ---------------- Verbindung zum Hilfsprogramm ----------------
@@ -94,21 +120,48 @@ final class RealKey {
         out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
         out.flush();
         String r = in.readLine();
-        if (r == null) throw new Exception("getrennt");
+        if (r == null) throw new IOException("getrennt");
         return r;
     }
 
-    /** Sendet einen echten Tastendruck. Nur im Hintergrund aufrufen! */
+    /**
+     * Sendet einen echten Tastendruck. Nur im Hintergrund aufrufen!
+     * Wird nie doppelt gesendet: Wiederholt wird nur, wenn sicher ist, dass nichts angekommen ist
+     * (Verbindung war schon tot). Bei einer langsamen Antwort gilt der Druck als gesendet.
+     * @return true = gesendet (kein Rückfall nötig), false = sicher nicht gesendet
+     */
     static boolean pressKey(Context c, int code) {
         synchronized (lock) {
             for (int attempt = 0; attempt < 2; attempt++) {
+                if (sock == null && connect(c) == null) break;
                 try {
-                    if (sock == null && connect(c) == null) break;
-                    if ("OK".equals(request("KEY " + code))) {
+                    out.write(("KEY " + code + "\n").getBytes(StandardCharsets.UTF_8));
+                    out.flush();
+                } catch (Throwable t) {
+                    closeQuietly(); // nichts gesendet → neu verbinden und nochmal
+                    continue;
+                }
+                try {
+                    String r = in.readLine();
+                    if (r == null) {
+                        // Alte Verbindung war tot (z. B. Hilfsprogramm neu gestartet) → kam nicht an
+                        closeQuietly();
+                        continue;
+                    }
+                    if ("OK".equals(r)) {
                         active = true;
                         return true;
                     }
+                    // Hilfsprogramm hat den Befehl bekommen, konnte aber nicht auslösen → Rückfall erlaubt
+                    closeQuietly();
+                    active = false;
+                    return false;
+                } catch (SocketTimeoutException slow) {
+                    // Antwort zu langsam: Druck ist sehr wahrscheinlich angekommen → NICHT nochmal senden
+                    closeQuietly();
+                    return true;
                 } catch (Throwable t) {
+                    // Verbindung zurückgesetzt → kam nicht an
                     closeQuietly();
                 }
             }
@@ -117,13 +170,115 @@ final class RealKey {
         }
     }
 
-    /** Läuft das Hilfsprogramm in der aktuellen Version? */
-    static boolean isRunning(Context c) {
+    /** Lebt das Hilfsprogramm (in der aktuellen Version)? Für die Minuten-Prüfung. Nur im Hintergrund! */
+    static boolean ping(Context c) {
         synchronized (lock) {
-            String v = connect(c);
-            boolean ok = v != null && v.equals(version(c));
-            active = ok;
-            return ok;
+            String ver = version(c);
+            for (int attempt = 0; attempt < 2; attempt++) {
+                try {
+                    if (sock == null) {
+                        String v = connect(c);
+                        if (v == null) break;
+                        if (!v.equals(ver)) break;
+                    }
+                    String r = request("PING");
+                    if (r.equals("PONG " + ver)) {
+                        active = true;
+                        return true;
+                    }
+                    break;
+                } catch (Throwable t) {
+                    closeQuietly();
+                }
+            }
+            closeQuietly();
+            active = false;
+            return false;
+        }
+    }
+
+    // ---------------- ADB vorbereiten ----------------
+
+    /**
+     * Schaltet alles ein, was ADB braucht, und sucht den Port von „Debugging über WLAN“.
+     * - Entwickleroptionen und USB-Debugging an (falls ein Update sie abgeschaltet hat)
+     * - Verfall der ADB-Freigabe nach 7 Tagen abschalten
+     * @return {host, port} oder null
+     */
+    private static Object[] prepareAdb(Context c) throws InterruptedException {
+        ContentResolver cr = c.getContentResolver();
+        try {
+            if (Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) != 1) {
+                Settings.Global.putInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 1);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) != 1) {
+                Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            // 0 = ADB-Freigaben verfallen nie (Entwickleroption „ADB-Autorisierungszeitlimit deaktivieren“)
+            if (Settings.Global.getLong(cr, "adb_allowed_connection_time", -1) != 0) {
+                Settings.Global.putLong(cr, "adb_allowed_connection_time", 0);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (Settings.Global.getInt(cr, "adb_wifi_enabled", 0) != 1) {
+                Settings.Global.putInt(cr, "adb_wifi_enabled", 1);
+                Thread.sleep(3000);
+            }
+        } catch (InterruptedException e) {
+            throw e;
+        } catch (Throwable ignored) {
+        }
+
+        Object[] target = null;
+        long until = System.currentTimeMillis() + 30_000;
+        while (target == null && System.currentTimeMillis() < until) {
+            target = AdbClient.findTlsPort(c, 5000);
+            if (target == null) Thread.sleep(2000);
+        }
+        return target;
+    }
+
+    /** Führt einen Befehl per ADB aus (erst gefundene Adresse, dann 127.0.0.1). */
+    private static String adbShell(AdbKey key, Object[] target, String cmd) throws Exception {
+        String host = (String) target[0];
+        int port = (Integer) target[1];
+        try {
+            return AdbClient.shell(key, host, port, cmd);
+        } catch (Throwable first) {
+            if (!"127.0.0.1".equals(host)) return AdbClient.shell(key, "127.0.0.1", port, cmd);
+            throw first;
+        }
+    }
+
+    // ---------------- Schlüssel übernehmen (mit Prüfung) ----------------
+
+    /**
+     * Übernimmt einen Schlüssel nur, wenn er auf diesem Gerät wirklich gekoppelt ist
+     * (Test-Verbindung). So kann keine andere App einen falschen Schlüssel unterschieben.
+     * Nur im Hintergrund! @return null bei Erfolg, sonst Fehlermeldung
+     */
+    static String importVerified(Context ctx, String pem) {
+        Context c = ctx.getApplicationContext();
+        try {
+            AdbKey key = AdbKey.parsePem(pem);
+            if (!Healer.hasPermission(c)) return "Selbstheilungs-Berechtigung fehlt (zuerst pm grant ausführen)";
+            Object[] target = prepareAdb(c);
+            if (target == null) return "Debugging über WLAN nicht erreichbar – einschalten und erneut senden";
+            String r = adbShell(key, target, "echo TVMAPPER_OK");
+            if (r == null || !r.contains("TVMAPPER_OK")) return "Schlüssel ist auf diesem Gerät nicht gekoppelt";
+            key.save(c);
+            markAdbUsed(c);
+            return null;
+        } catch (Throwable t) {
+            String m = t.getMessage();
+            return "Schlüssel abgelehnt: " + (m != null ? m : t.getClass().getSimpleName());
         }
     }
 
@@ -137,94 +292,54 @@ final class RealKey {
         Context c = ctx.getApplicationContext();
         synchronized (RealKey.class) {
             try {
-                // Läuft schon?
-                synchronized (lock) {
-                    String v = connect(c);
-                    if (v != null) {
-                        if (v.equals(version(c))) {
-                            active = true;
-                            status = "aktiv";
-                            return true;
-                        }
-                        // Alte Version (nach App-Update): beenden und neu starten
-                        try {
-                            request("QUIT");
-                        } catch (Throwable ignored) {
-                        }
-                        closeQuietly();
-                        Thread.sleep(500);
-                    }
+                // Läuft schon in der richtigen Version?
+                if (ping(c)) {
+                    status = "aktiv";
+                    return true;
                 }
                 active = false;
 
                 if (!AdbKey.exists(c)) {
                     status = "nicht eingerichtet – Termux-Befehl nötig (siehe rechts)";
-                    return false;
+                    return fail();
                 }
                 if (!Healer.hasPermission(c)) {
                     status = "Selbstheilungs-Berechtigung fehlt";
-                    return false;
+                    return fail();
                 }
                 lastStartAttempt = System.currentTimeMillis();
                 status = "wird gestartet …";
 
-                // „Debugging über WLAN“ einschalten
-                ContentResolver cr = c.getContentResolver();
-                try {
-                    if (Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) != 1) {
-                        Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1);
-                    }
-                    if (Settings.Global.getInt(cr, "adb_wifi_enabled", 0) != 1) {
-                        Settings.Global.putInt(cr, "adb_wifi_enabled", 1);
-                        Thread.sleep(3000);
-                    }
-                } catch (Throwable ignored) {
-                }
-
-                // Port suchen (bis zu ~30 s, WLAN braucht nach dem Start evtl. etwas)
-                Object[] target = null;
-                long until = System.currentTimeMillis() + 30_000;
-                while (target == null && System.currentTimeMillis() < until) {
-                    target = AdbClient.findTlsPort(c, 5000);
-                    if (target == null) Thread.sleep(2000);
-                }
+                Object[] target = prepareAdb(c);
                 if (target == null) {
                     status = "Debugging über WLAN nicht erreichbar (WLAN verbunden?)";
-                    return false;
+                    return fail();
                 }
 
                 AdbKey key = AdbKey.load(c);
                 String pkg = c.getPackageName();
-                // Genau der Befehl, der in Termux funktioniert hat – plus 2 s warten und Port prüfen,
-                // damit sich das Hilfsprogramm sauber von der ADB-Sitzung löst.
-                String cmd = "CLASSPATH=$(pm path " + pkg + " | head -1 | cut -d: -f2) setsid app_process /system/bin "
-                        + InjectServer.class.getName() + " " + token(c) + " " + PORT + " " + version(c)
+                String cls = InjectServer.class.getName();          // de.kerim.tvmapper.InjectServer
+                String clsHead = cls.substring(0, cls.length() - 6); // de.kerim.tvmapper.Inject
+                String pattern = clsHead + "[S]erver";               // passt nicht auf die eigene Shell
+                // 1) alte/fremde Hilfsprogramme beenden  2) neu starten (bewährter Befehl)
+                // 3) 2 s warten, damit es sich von der Sitzung löst  4) Port prüfen
+                String cmd = "pkill -f '" + pattern + "' 2>/dev/null; sleep 0.5; "
+                        + "C=" + clsHead + "; "
+                        + "CLASSPATH=$(pm path " + pkg + " | head -1 | cut -d: -f2) setsid app_process /system/bin "
+                        + "${C}Server " + token(c) + " " + PORT + " " + version(c)
                         + " </dev/null >/dev/null 2>&1 & sleep 2; "
                         + "if grep -qi ':" + String.format("%04X", PORT) + " ' /proc/net/tcp /proc/net/tcp6; "
                         + "then echo PORT_OFFEN; else echo PORT_ZU; fi";
-                String host = (String) target[0];
-                int port = (Integer) target[1];
-                String output;
-                try {
-                    output = AdbClient.shell(key, host, port, cmd);
-                } catch (Throwable first) {
-                    if (!"127.0.0.1".equals(host)) {
-                        output = AdbClient.shell(key, "127.0.0.1", port, cmd);
-                    } else {
-                        throw first;
-                    }
-                }
+                String output = adbShell(key, target, cmd);
+                markAdbUsed(c);
                 output = output == null ? "" : output.trim();
 
                 // Warten, bis es antwortet
                 for (int i = 0; i < 20; i++) {
-                    synchronized (lock) {
-                        String v = connect(c);
-                        if (v != null && v.equals(version(c))) {
-                            active = true;
-                            status = "aktiv";
-                            return true;
-                        }
+                    if (ping(c)) {
+                        status = "aktiv";
+                        lastEnsureFail = 0;
+                        return true;
                     }
                     Thread.sleep(300);
                 }
@@ -237,18 +352,44 @@ final class RealKey {
                 } else {
                     status = "Hilfsprogramm startet nicht: " + (output.length() > 120 ? output.substring(0, 120) : output);
                 }
-                return false;
+                return fail();
             } catch (Throwable t) {
                 active = false;
                 String msg = t.getMessage();
                 status = "Fehler: " + (msg != null ? msg : t.getClass().getSimpleName());
-                return false;
+                return fail();
             }
         }
     }
 
-    private static final java.util.concurrent.atomic.AtomicBoolean busy =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private static boolean fail() {
+        lastEnsureFail = System.currentTimeMillis();
+        return false;
+    }
+
+    /**
+     * Frischt die ADB-Freigabe ca. einmal täglich auf (kurze Test-Verbindung),
+     * damit sie auch bei langer Laufzeit ohne Neustart nie verfällt. Nur im Hintergrund!
+     */
+    static void refreshAdbIfDue(Context ctx) {
+        Context c = ctx.getApplicationContext();
+        try {
+            if (!AdbKey.exists(c) || !Healer.hasPermission(c)) return;
+            long last = sp(c).getLong("last_adb", 0);
+            if (System.currentTimeMillis() - last < REFRESH_INTERVAL_MS) return;
+            synchronized (RealKey.class) {
+                Object[] target = prepareAdb(c);
+                if (target == null) return;
+                String r = adbShell(AdbKey.load(c), target, "echo TVMAPPER_OK");
+                if (r != null && r.contains("TVMAPPER_OK")) markAdbUsed(c);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ---------------- Hintergrund-Aufrufe ----------------
+
+    private static final AtomicBoolean busy = new AtomicBoolean(false);
 
     /** Prüfen/Starten im Hintergrund (ohne Zeitsperre), nie doppelt gleichzeitig. */
     static void checkAsync(Context c, boolean restart) {
@@ -258,31 +399,54 @@ final class RealKey {
             try {
                 if (restart) {
                     synchronized (lock) {
-                        if (connect(app) != null) {
-                            try {
-                                request("QUIT");
-                            } catch (Throwable ignored) {
-                            }
-                        }
                         closeQuietly();
                     }
-                    try {
-                        Thread.sleep(600);
-                    } catch (InterruptedException ignored) {
-                    }
+                    active = false;
+                    // Neustart erzwingen: ensure() beendet alte Hilfsprogramme per pkill
+                    forceStart(app);
+                } else {
+                    ensure(app);
                 }
-                ensure(app);
             } finally {
                 busy.set(false);
             }
         }).start();
     }
 
-    /** Im Hintergrund neu starten, höchstens alle 30 s. */
+    /** Wie ensure(), startet aber auch neu, wenn das alte Hilfsprogramm noch antwortet. */
+    private static void forceStart(Context app) {
+        synchronized (lock) {
+            if (connect(app) != null) {
+                try {
+                    request("QUIT");
+                } catch (Throwable ignored) {
+                }
+            }
+            closeQuietly();
+        }
+        try {
+            Thread.sleep(600);
+        } catch (InterruptedException ignored) {
+        }
+        ensure(app);
+    }
+
+    /** Nach einem fehlgeschlagenen Tastendruck: im Hintergrund neu starten, höchstens alle 30 s. */
     static void ensureAsync(Context c) {
         if (System.currentTimeMillis() - lastStartAttempt < 30_000) return;
         lastStartAttempt = System.currentTimeMillis();
         final Context app = c.getApplicationContext();
         new Thread(() -> ensure(app)).start();
+    }
+
+    /**
+     * Minuten-Prüfung (vom Dienst): Lebt das Hilfsprogramm? Wenn nicht, sofort neu starten.
+     * Nach einem Fehlschlag (z. B. kein WLAN) erst nach 5 Minuten wieder versuchen. Nur im Hintergrund!
+     */
+    static void keepAlive(Context c) {
+        if (ping(c)) return;
+        if (lastEnsureFail != 0 && System.currentTimeMillis() - lastEnsureFail < 5 * 60_000) return;
+        if (busy.get()) return;
+        ensure(c);
     }
 }

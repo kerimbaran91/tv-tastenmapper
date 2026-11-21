@@ -52,6 +52,59 @@ public class MapperService extends AccessibilityService {
         } catch (Throwable ignored) {
         }
         registerNetworkWatch();
+        startKeepAlive();
+    }
+
+    // ---------- Minuten-Prüfung des Hilfsprogramms (eigener Thread, blockiert nie die Taste) ----------
+    private static HandlerThread watchThread;
+    private static Handler watch;
+    private static final long KEEPALIVE_MS = 60_000;
+
+    private static volatile Context appCtx;
+
+    // Statisch: es gibt immer nur EINE Prüf-Schleife, auch wenn der Dienst neu verbunden wird
+    private static final Runnable keepAlive = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                Context app = appCtx;
+                if (app != null && Prefs.method == Prefs.METHOD_REAL) {
+                    RealKey.keepAlive(app);
+                    RealKey.refreshAdbIfDue(app);
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (running && watch != null) {
+                    watch.removeCallbacks(this); // nie zwei Schleifen gleichzeitig
+                    watch.postDelayed(this, KEEPALIVE_MS);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+    };
+
+    private void startKeepAlive() {
+        try {
+            appCtx = getApplicationContext();
+            synchronized (MapperService.class) {
+                if (watch == null) {
+                    watchThread = new HandlerThread("echte-taste-pruefung");
+                    watchThread.start();
+                    watch = new Handler(watchThread.getLooper());
+                }
+            }
+            watch.removeCallbacks(keepAlive);
+            watch.postDelayed(keepAlive, KEEPALIVE_MS);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void stopKeepAlive() {
+        try {
+            if (watch != null) watch.removeCallbacks(keepAlive);
+        } catch (Throwable ignored) {
+        }
     }
 
     private ConnectivityManager.NetworkCallback netCallback;
@@ -220,6 +273,7 @@ public class MapperService extends AccessibilityService {
         running = false;
         instance = null;
         unregisterNetworkWatch();
+        stopKeepAlive();
         return super.onUnbind(intent);
     }
 
@@ -227,6 +281,7 @@ public class MapperService extends AccessibilityService {
     public void onDestroy() {
         running = false;
         instance = null;
+        stopKeepAlive();
         super.onDestroy();
     }
 }

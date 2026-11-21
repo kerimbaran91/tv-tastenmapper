@@ -88,6 +88,7 @@ public class Watchdog extends JobService {
                     } else {
                         RealKey.ensure(app);
                     }
+                    RealKey.refreshAdbIfDue(app);
                 }
             } catch (Throwable ignored) {
             }

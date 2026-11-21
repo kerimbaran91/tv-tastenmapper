@@ -138,8 +138,33 @@ final class Prefs {
         return diagUntil != 0 && diagRemainingMs() > 0;
     }
 
-    /** Tasten, die beim Anlernen ignoriert werden (Navigation, Zurück, Lautstärke). */
+    /**
+     * Tasten, die nie umbelegt werden dürfen: Home (sonst kommt man nicht mehr raus) und
+     * Medien-/Kopfhörer-Tasten (die App sendet sie selbst – sonst würde sie sich endlos auslösen).
+     */
+    static boolean forbidden(int k) {
+        switch (k) {
+            case KeyEvent.KEYCODE_HOME:
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_MEDIA_STOP:
+            case KeyEvent.KEYCODE_HEADSETHOOK:
+            case KeyEvent.KEYCODE_ASSIST:
+            case KeyEvent.KEYCODE_VOICE_ASSIST:
+            case KeyEvent.KEYCODE_SEARCH:
+            case KeyEvent.KEYCODE_SETTINGS:
+            case KeyEvent.KEYCODE_SLEEP:
+            case KeyEvent.KEYCODE_WAKEUP:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** Tasten, die beim Anlernen ignoriert werden (Navigation, Zurück, Lautstärke + verbotene). */
     static boolean ignoredForLearning(int k) {
+        if (forbidden(k)) return true;
         switch (k) {
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_DPAD_DOWN:
@@ -161,7 +186,7 @@ final class Prefs {
     /** Passt das Tasten-Ereignis zur angelernten Taste? (nur Speicherzugriff) */
     static boolean matches(int keyCode, int scanCode) {
         int learned = code;
-        if (learned < 0) return false;
+        if (learned < 0 || forbidden(learned)) return false;
         if (learned != KeyEvent.KEYCODE_UNKNOWN) return keyCode == learned;
         // Manche Sondertasten senden keinen Android-Code, nur einen Scancode
         int s = scan;

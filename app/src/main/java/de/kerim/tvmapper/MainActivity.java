@@ -84,15 +84,28 @@ public class MainActivity extends Activity {
         String b64 = intent.getStringExtra("adbkey");
         if (b64 == null) return;
         intent.removeExtra("adbkey");
+        final String pem;
         try {
-            String pem = new String(android.util.Base64.decode(b64.trim(), android.util.Base64.DEFAULT), "UTF-8");
-            AdbKey.importPem(this, pem);
-            Toast.makeText(this, "ADB-Schlüssel übernommen – echte Taste wird gestartet …", Toast.LENGTH_LONG).show();
-            RealKey.checkAsync(this, true);
+            pem = new String(android.util.Base64.decode(b64.trim(), android.util.Base64.DEFAULT), "UTF-8");
         } catch (Throwable t) {
-            Toast.makeText(this, "Schlüssel ungültig: " + t.getMessage(), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Schlüssel ungültig", Toast.LENGTH_LONG).show();
+            return;
         }
-        refresh();
+        Toast.makeText(this, "Schlüssel wird geprüft …", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            // Nur übernehmen, wenn er auf diesem Stick wirklich gekoppelt ist
+            String err = RealKey.importVerified(getApplicationContext(), pem);
+            runOnUiThread(() -> {
+                if (err == null) {
+                    Toast.makeText(this, "ADB-Schlüssel übernommen – echte Taste wird gestartet …",
+                            Toast.LENGTH_LONG).show();
+                    RealKey.checkAsync(this, true);
+                } else {
+                    Toast.makeText(this, err, Toast.LENGTH_LONG).show();
+                }
+                refresh();
+            });
+        }).start();
     }
 
     @Override

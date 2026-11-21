@@ -37,14 +37,25 @@ final class AdbKey {
         return new File(c.getFilesDir(), KEY_FILE).exists();
     }
 
-    /** Übernimmt den Schlüssel aus dem Text einer adbkey-Datei (PEM). Wirft bei Fehlern. */
-    static void importPem(Context c, String pem) throws Exception {
+    private byte[] der;
+
+    /** Liest einen Schlüssel aus dem Text einer adbkey-Datei (PEM), ohne ihn zu speichern. */
+    static AdbKey parsePem(String pem) throws Exception {
         byte[] der = pemToPkcs8(pem);
-        build(der); // prüfen, ob alles klappt
+        AdbKey k = build(der);
+        k.der = der;
+        return k;
+    }
+
+    /** Speichert einen (vorher geprüften) Schlüssel. Schreibt erst in eine Temp-Datei, dann umbenennen. */
+    void save(Context c) throws Exception {
         File f = new File(c.getFilesDir(), KEY_FILE);
-        try (FileOutputStream out = new FileOutputStream(f)) {
+        File tmp = new File(c.getFilesDir(), KEY_FILE + ".tmp");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(der);
+            out.getFD().sync();
         }
+        if (!tmp.renameTo(f)) throw new Exception("Speichern fehlgeschlagen");
     }
 
     static AdbKey load(Context c) throws Exception {
