@@ -12,6 +12,7 @@ public class BootReceiver extends BroadcastReceiver {
             Context app = context.getApplicationContext();
             Healer.ensure(app, false);
             Watchdog.schedule(app);
+            Watchdog.scheduleBoot(app);
             Watchdog.scheduleSoon(app);
             Watchdog.scheduleLater(app);
         } catch (Throwable ignored) {

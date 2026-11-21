@@ -5,6 +5,8 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -46,9 +48,47 @@ public class MapperService extends AccessibilityService {
         } catch (Throwable ignored) {
         }
         try {
-            if (Prefs.method == Prefs.METHOD_REAL) RealKey.ensureAsync(this);
+            if (Prefs.method == Prefs.METHOD_REAL) RealKey.checkAsync(this, false);
         } catch (Throwable ignored) {
         }
+        registerNetworkWatch();
+    }
+
+    private ConnectivityManager.NetworkCallback netCallback;
+
+    /** Sobald das WLAN (wieder) verbunden ist: echte Taste sofort prüfen/starten. */
+    private void registerNetworkWatch() {
+        try {
+            if (netCallback != null) return;
+            ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+            if (cm == null) return;
+            final Context app = getApplicationContext();
+            netCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    try {
+                        if (Prefs.method == Prefs.METHOD_REAL && !RealKey.active) {
+                            main.postDelayed(() -> RealKey.checkAsync(app, false), 2000);
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            };
+            cm.registerDefaultNetworkCallback(netCallback);
+        } catch (Throwable ignored) {
+            netCallback = null;
+        }
+    }
+
+    private void unregisterNetworkWatch() {
+        try {
+            if (netCallback != null) {
+                ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+                if (cm != null) cm.unregisterNetworkCallback(netCallback);
+            }
+        } catch (Throwable ignored) {
+        }
+        netCallback = null;
     }
 
     @Override
@@ -179,6 +219,7 @@ public class MapperService extends AccessibilityService {
     public boolean onUnbind(Intent intent) {
         running = false;
         instance = null;
+        unregisterNetworkWatch();
         return super.onUnbind(intent);
     }
 
