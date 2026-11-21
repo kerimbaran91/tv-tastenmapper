@@ -66,7 +66,7 @@ final class Prefs {
     static void setEnabled(Context c, boolean on) {
         load(c);
         enabled = on;
-        sp(c).edit().putBoolean(K_ENABLED, on).apply();
+        sp(c).edit().putBoolean(K_ENABLED, on).commit();
     }
 
     static int getMethod(Context c) {
@@ -77,7 +77,7 @@ final class Prefs {
     static void setMethod(Context c, int m) {
         load(c);
         method = m;
-        sp(c).edit().putInt(K_METHOD, m).apply();
+        sp(c).edit().putInt(K_METHOD, m).commit();
     }
 
     static String methodName(int m) {
@@ -99,7 +99,7 @@ final class Prefs {
         code = keyCode;
         scan = scanCode;
         learnUntil = 0;
-        sp(c).edit().putInt(K_CODE, keyCode).putInt(K_SCAN, scanCode).apply();
+        sp(c).edit().putInt(K_CODE, keyCode).putInt(K_SCAN, scanCode).commit();
     }
 
     static void startLearning() {

@@ -12,6 +12,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -41,7 +42,10 @@ public final class InjectServer {
             }
             initInput();
 
-            ServerSocket server = new ServerSocket(port, 4, InetAddress.getByName("127.0.0.1"));
+            // Port sofort wieder belegen dürfen, auch wenn das alte Hilfsprogramm ihn gerade erst freigegeben hat
+            ServerSocket server = new ServerSocket();
+            server.setReuseAddress(true);
+            server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), port), 4);
             while (true) {
                 final Socket s = server.accept();
                 Thread t = new Thread(() -> handle(s, token, version));
@@ -76,6 +80,27 @@ public final class InjectServer {
         }
     }
 
+    /**
+     * Ist die Verbindung zum Eingabe-System noch lebendig? Nach einem internen Neustart von Android
+     * wäre sie tot – dann beendet sich das Hilfsprogramm, und die App startet ein frisches.
+     */
+    static boolean inputAlive() {
+        Method m;
+        try {
+            m = inputManager.getClass().getMethod("getInputDeviceIds");
+        } catch (Throwable t) {
+            return true; // Prüfung auf diesem Gerät nicht möglich → als lebendig werten (nie grundlos beenden)
+        }
+        try {
+            m.invoke(inputManager);
+            return true;
+        } catch (java.lang.reflect.InvocationTargetException dead) {
+            return false; // Aufruf ist im System fehlgeschlagen → Verbindung tot
+        } catch (Throwable other) {
+            return true;
+        }
+    }
+
     static boolean pressKey(int code) {
         long now = SystemClock.uptimeMillis();
         KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, 0,
@@ -99,11 +124,23 @@ public final class InjectServer {
             String line;
             while ((line = in.readLine()) != null) {
                 String reply;
+                boolean exitAfter = false;
                 if (line.equals("PING")) {
-                    reply = "PONG " + version;
+                    if (inputAlive()) {
+                        reply = "PONG " + version;
+                    } else {
+                        reply = "DEAD";
+                        exitAfter = true;
+                    }
                 } else if (line.startsWith("KEY ")) {
                     int code = Integer.parseInt(line.substring(4).trim());
-                    reply = pressKey(code) ? "OK" : "FAIL";
+                    if (pressKey(code)) {
+                        reply = "OK";
+                    } else {
+                        // Eingabe-System tot (z. B. nach internem Android-Neustart): melden und beenden
+                        reply = "FAIL";
+                        exitAfter = true;
+                    }
                 } else if (line.equals("QUIT")) {
                     out.write("BYE\n".getBytes(StandardCharsets.UTF_8));
                     out.flush();
@@ -114,6 +151,10 @@ public final class InjectServer {
                 }
                 out.write((reply + "\n").getBytes(StandardCharsets.UTF_8));
                 out.flush();
+                if (exitAfter) {
+                    System.exit(2);
+                    return;
+                }
             }
         } catch (Throwable ignored) {
         }

@@ -153,10 +153,11 @@ final class RealKey {
                         active = true;
                         return true;
                     }
-                    // Hilfsprogramm hat den Befehl bekommen, konnte aber nicht auslösen → Rückfall erlaubt
+                    // Hilfsprogramm konnte nicht auslösen und beendet sich → Rückfall + frisch starten
                     closeQuietly();
                     active = false;
-                    Protokoll.add(c, "Tastendruck: Hilfsprogramm meldet Fehler – Kopfhörer-Taste genutzt");
+                    lastStartAttempt = 0; // Neustart nicht durch die 30-s-Sperre aufhalten
+                    Protokoll.add(c, "Tastendruck: Hilfsprogramm war taub – Kopfhörer-Taste genutzt, starte neu");
                     return false;
                 } catch (SocketTimeoutException slow) {
                     // Antwort zu langsam: Druck ist sehr wahrscheinlich angekommen → NICHT nochmal senden
@@ -346,7 +347,10 @@ final class RealKey {
                 // 1) alte/fremde Hilfsprogramme beenden  2) neu starten (bewährter Befehl)
                 // 3) 2 s warten, damit es sich von der Sitzung löst  4) Port prüfen
                 String cmd = "echo VORHER=$(pgrep -f '" + pattern + "' | wc -l); "
-                        + "pkill -f '" + pattern + "' 2>/dev/null; sleep 0.5; "
+                        + "pkill -f '" + pattern + "' 2>/dev/null; "
+                        // warten, bis das alte wirklich weg ist (max. 3 s), sonst hart beenden
+                        + "i=0; while [ $(pgrep -f '" + pattern + "' | wc -l) -gt 0 ] && [ $i -lt 6 ]; do sleep 0.5; i=$((i+1)); done; "
+                        + "if [ $(pgrep -f '" + pattern + "' | wc -l) -gt 0 ]; then pkill -9 -f '" + pattern + "' 2>/dev/null; sleep 0.3; echo HART_BEENDET; fi; "
                         + "echo NACHHER=$(pgrep -f '" + pattern + "' | wc -l); "
                         + "C=" + clsHead + "; "
                         + "CLASSPATH=$(pm path " + pkg + " | head -1 | cut -d: -f2) setsid app_process /system/bin "
@@ -360,7 +364,7 @@ final class RealKey {
                 Protokoll.add(c, "Startbefehl: " + output.replace('\n', ' '));
 
                 // Warten, bis es antwortet
-                for (int i = 0; i < 20; i++) {
+                for (int i = 0; i < 50; i++) {
                     if (ping(c)) {
                         status = "aktiv";
                         lastEnsureFail = 0;
