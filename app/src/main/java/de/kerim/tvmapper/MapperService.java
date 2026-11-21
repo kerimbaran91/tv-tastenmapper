@@ -5,6 +5,7 @@ import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
+import android.os.Build;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
@@ -16,10 +17,15 @@ import android.view.accessibility.AccessibilityEvent;
 public class MapperService extends AccessibilityService {
 
     static volatile boolean running = false;
+    static volatile MapperService instance = null;
+
+    private static final int GA_HEADSETHOOK = 10; // AccessibilityService.GLOBAL_ACTION_KEYCODE_HEADSETHOOK (API 31)
+    private static final int GA_DPAD_CENTER = 20; // AccessibilityService.GLOBAL_ACTION_DPAD_CENTER (API 33)
 
     @Override
     protected void onServiceConnected() {
         running = true;
+        instance = this;
         try {
             Prefs.load(this);
         } catch (Throwable ignored) {
@@ -48,7 +54,7 @@ public class MapperService extends AccessibilityService {
                     return false;
                 }
                 if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                    sendPlayPause(this);
+                    sendPlayPause(this, this);
                 }
                 return true; // Taste (Drücken, Halten, Loslassen) komplett schlucken
             }
@@ -83,7 +89,7 @@ public class MapperService extends AccessibilityService {
         Prefs.stopLearning();
 
         if (!Prefs.enabled || !Prefs.matches(code, ev.getScanCode())) return false;
-        if (firstDown) sendPlayPause(this);
+        if (firstDown) sendPlayPause(this, this);
         return true;
     }
 
@@ -94,14 +100,32 @@ public class MapperService extends AccessibilityService {
         }
     }
 
-    static void sendPlayPause(Context c) {
+    /**
+     * Sendet Play/Pause mit der gewählten Methode.
+     * Kopfhörer- und OK-Taste werden vom System als echter Tastendruck an die App im Vordergrund geschickt.
+     * @return true, wenn gesendet
+     */
+    static boolean sendPlayPause(Context c, MapperService svc) {
+        int m = Prefs.method;
+        if (svc != null && m != Prefs.METHOD_SESSION) {
+            try {
+                if (m == Prefs.METHOD_OK && Build.VERSION.SDK_INT >= 33) {
+                    if (svc.performGlobalAction(GA_DPAD_CENTER)) return true;
+                } else if (Build.VERSION.SDK_INT >= 31) {
+                    if (svc.performGlobalAction(GA_HEADSETHOOK)) return true;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        // Rückfall: Medien-Sitzung
         AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) return;
+        if (am == null) return false;
         long now = SystemClock.uptimeMillis();
         am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0));
         am.dispatchMediaKeyEvent(new KeyEvent(now, now + 50, KeyEvent.ACTION_UP,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0));
+        return true;
     }
 
     @Override
@@ -116,12 +140,14 @@ public class MapperService extends AccessibilityService {
     @Override
     public boolean onUnbind(Intent intent) {
         running = false;
+        instance = null;
         return super.onUnbind(intent);
     }
 
     @Override
     public void onDestroy() {
         running = false;
+        instance = null;
         super.onDestroy();
     }
 }

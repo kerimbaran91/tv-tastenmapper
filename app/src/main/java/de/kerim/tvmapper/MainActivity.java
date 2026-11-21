@@ -39,7 +39,7 @@ public class MainActivity extends Activity {
     private static final boolean RESTRICTED = Build.VERSION.SDK_INT >= 33;
 
     private TextView tvService, tvHeal, tvKey, tvLearn, tvUpdate, tvDiag, tvDiagTitle;
-    private Button btnLearn, btnToggle, btnUpdate, btnDiag;
+    private Button btnLearn, btnToggle, btnUpdate, btnDiag, btnMethod;
     private LinearLayout diagCard;
     private volatile Updater.Release latest;
     private volatile boolean updateBusy;
@@ -153,6 +153,7 @@ public class MainActivity extends Activity {
         }
 
         btnToggle.setText(Prefs.isEnabled(this) ? "Umbelegung: AN" : "Umbelegung: AUS");
+        btnMethod.setText("Methode: " + Prefs.methodName(Prefs.getMethod(this)));
 
         long dleft = Prefs.diagRemainingMs();
         if (dleft > 0) {
@@ -163,10 +164,8 @@ public class MainActivity extends Activity {
             btnDiag.setText("Diagnose beenden");
         } else {
             btnDiag.setText("Tasten-Diagnose");
-            if (diagCard.getVisibility() == View.VISIBLE) {
-                tvDiagTitle.setText("Diagnose beendet – letzte Tasten:");
-                tvDiag.setText(Diag.text());
-            }
+            tvDiagTitle.setText("Tasten-Diagnose (aus) – letzte Tasten:");
+            tvDiag.setText(Diag.text());
         }
     }
 
@@ -235,10 +234,19 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void onMethodClicked() {
+        int m = (Prefs.getMethod(this) + 1) % Prefs.METHOD_COUNT;
+        Prefs.setMethod(this, m);
+        Toast.makeText(this, "Methode: " + Prefs.methodName(m) + " – jetzt im Video mit TV+ testen",
+                Toast.LENGTH_LONG).show();
+        refresh();
+    }
+
     private void onTestClicked() {
         try {
-            MapperService.sendPlayPause(this);
-            Toast.makeText(this, "Play/Pause gesendet", Toast.LENGTH_SHORT).show();
+            MapperService.sendPlayPause(this, MapperService.instance);
+            Toast.makeText(this, "Play/Pause gesendet (" + Prefs.methodName(Prefs.getMethod(this)) + ")",
+                    Toast.LENGTH_SHORT).show();
         } catch (Throwable t) {
             Toast.makeText(this, "Fehler beim Senden", Toast.LENGTH_SHORT).show();
         }
@@ -366,29 +374,15 @@ public class MainActivity extends Activity {
         btnLearn = button("TV+-Taste anlernen", v -> onLearnClicked());
         btnDiag = button("Tasten-Diagnose", v -> onDiagClicked());
         btnToggle = button("Umbelegung: AN", v -> onToggleClicked());
+        btnMethod = button("Methode", v -> onMethodClicked());
         Button btnActivate = button("Dienst aktivieren", v -> onActivateClicked());
         Button btnTest = button("Play/Pause testen", v -> onTestClicked());
         left.addView(btnLearn);
+        left.addView(btnMethod);
         left.addView(btnDiag);
         left.addView(btnToggle);
         left.addView(btnActivate);
         left.addView(btnTest);
-
-        // Diagnose-Anzeige
-        left.addView(space(12));
-        diagCard = card();
-        tvDiagTitle = text("", 16, ACCENT);
-        tvDiagTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvDiag = text("", 14, TEXT);
-        tvDiag.setTypeface(Typeface.MONOSPACE);
-        diagCard.addView(tvDiagTitle);
-        diagCard.addView(space(6));
-        diagCard.addView(tvDiag);
-        diagCard.addView(space(6));
-        diagCard.addView(text("[Dienst] = kommt beim Dienst an → lässt sich umbelegen.\n"
-                + "Erscheint bei TV+ gar nichts, fängt das System die Taste vorher ab.", 13, MUTED));
-        diagCard.setVisibility(View.GONE);
-        left.addView(diagCard);
 
         // Updates
         left.addView(space(20));
@@ -405,9 +399,26 @@ public class MainActivity extends Activity {
 
         root.addView(space(32), new LinearLayout.LayoutParams(dp(32), 1));
 
-        // ---- Rechte Spalte: Anleitung ----
+        // ---- Rechte Spalte: Diagnose oben, Anleitung darunter ----
+        LinearLayout rightCol = column();
+        root.addView(rightCol, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // Diagnose-Anzeige
+        diagCard = card();
+        tvDiagTitle = text("", 16, ACCENT);
+        tvDiagTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        tvDiag = text("", 14, TEXT);
+        tvDiag.setTypeface(Typeface.MONOSPACE);
+        diagCard.addView(tvDiagTitle);
+        diagCard.addView(space(6));
+        diagCard.addView(tvDiag);
+        diagCard.addView(space(6));
+        diagCard.addView(text("[Dienst] = kommt beim Dienst an → lässt sich umbelegen.\n"
+                + "Erscheint bei TV+ gar nichts, fängt das System die Taste vorher ab.", 13, MUTED));
+
+        rightCol.addView(diagCard);
+        rightCol.addView(space(16));
         LinearLayout right = card();
-        root.addView(right, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        rightCol.addView(right);
         TextView h = text(RESTRICTED ? "Einrichtung für Google TV (einmalig)" : "Einrichtung (einmalig)", 20, Color.WHITE);
         h.setTypeface(Typeface.DEFAULT_BOLD);
         right.addView(h);

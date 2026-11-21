@@ -16,6 +16,13 @@ final class Prefs {
     private static final String K_CODE = "key_code";
     private static final String K_SCAN = "scan_code";
     private static final String K_ENABLED = "enabled";
+    private static final String K_METHOD = "method";
+
+    /** Wie Play/Pause gesendet wird. */
+    static final int METHOD_HEADSET = 0;   // echte Kopfhörer-Taste (Systemaktion), empfohlen
+    static final int METHOD_OK = 1;        // echte OK-Taste (Systemaktion)
+    static final int METHOD_SESSION = 2;   // alte Methode: nur an Medien-Sitzung
+    static final int METHOD_COUNT = 3;
 
     static final long LEARN_WINDOW_MS = 20_000;
     static final long DIAG_WINDOW_MS = 60_000;
@@ -25,6 +32,7 @@ final class Prefs {
     static volatile int code = -1;
     static volatile int scan = 0;
     static volatile boolean enabled = true;
+    static volatile int method = METHOD_HEADSET;
     static volatile long learnUntil = 0;   // nur im Speicher
     static volatile long diagUntil = 0;    // nur im Speicher
 
@@ -43,6 +51,8 @@ final class Prefs {
             code = p.getInt(K_CODE, -1);
             scan = p.getInt(K_SCAN, 0);
             enabled = p.getBoolean(K_ENABLED, true);
+            method = p.getInt(K_METHOD, METHOD_HEADSET);
+            if (method < 0 || method >= METHOD_COUNT) method = METHOD_HEADSET;
             loaded = true;
         }
     }
@@ -56,6 +66,25 @@ final class Prefs {
         load(c);
         enabled = on;
         sp(c).edit().putBoolean(K_ENABLED, on).apply();
+    }
+
+    static int getMethod(Context c) {
+        load(c);
+        return method;
+    }
+
+    static void setMethod(Context c, int m) {
+        load(c);
+        method = m;
+        sp(c).edit().putInt(K_METHOD, m).apply();
+    }
+
+    static String methodName(int m) {
+        switch (m) {
+            case METHOD_HEADSET: return "Kopfhörer-Taste (empfohlen)";
+            case METHOD_OK: return "OK-Taste";
+            default: return "Medien-Sitzung (alt)";
+        }
     }
 
     static boolean hasLearned(Context c) {
