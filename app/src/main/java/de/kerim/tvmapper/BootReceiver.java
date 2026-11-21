@@ -10,6 +10,12 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context context, Intent intent) {
         try {
             Context app = context.getApplicationContext();
+            String a = intent != null ? intent.getAction() : null;
+            if (Intent.ACTION_MY_PACKAGE_REPLACED.equals(a)) {
+                Protokoll.add(app, "App-Update erkannt (Version " + Updater.installedBuild(app) + ")");
+            } else {
+                Protokoll.add(app, "Neustart erkannt");
+            }
             Healer.ensure(app, false);
             Watchdog.schedule(app);
             Watchdog.scheduleBoot(app);

@@ -38,6 +38,7 @@ final class RealKey {
     private static OutputStream out;
     private static volatile long lastStartAttempt = 0;
     private static volatile long lastEnsureFail = 0;
+    private static volatile String seenOtherVersion = null;
 
     private RealKey() {}
 
@@ -155,10 +156,12 @@ final class RealKey {
                     // Hilfsprogramm hat den Befehl bekommen, konnte aber nicht auslösen → Rückfall erlaubt
                     closeQuietly();
                     active = false;
+                    Protokoll.add(c, "Tastendruck: Hilfsprogramm meldet Fehler – Kopfhörer-Taste genutzt");
                     return false;
                 } catch (SocketTimeoutException slow) {
                     // Antwort zu langsam: Druck ist sehr wahrscheinlich angekommen → NICHT nochmal senden
                     closeQuietly();
+                    Protokoll.add(c, "Tastendruck: Antwort langsam (nicht wiederholt)");
                     return true;
                 } catch (Throwable t) {
                     // Verbindung zurückgesetzt → kam nicht an
@@ -166,6 +169,7 @@ final class RealKey {
                 }
             }
             active = false;
+            Protokoll.add(c, "Tastendruck: Hilfsprogramm nicht erreichbar – Kopfhörer-Taste genutzt");
             return false;
         }
     }
@@ -179,7 +183,10 @@ final class RealKey {
                     if (sock == null) {
                         String v = connect(c);
                         if (v == null) break;
-                        if (!v.equals(ver)) break;
+                        if (!v.equals(ver)) {
+                            seenOtherVersion = v;
+                            break;
+                        }
                     }
                     String r = request("PING");
                     if (r.equals("PONG " + ver)) {
@@ -210,12 +217,14 @@ final class RealKey {
         try {
             if (Settings.Global.getInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 0) != 1) {
                 Settings.Global.putInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 1);
+                Protokoll.add(c, "Entwickleroptionen waren aus – eingeschaltet");
             }
         } catch (Throwable ignored) {
         }
         try {
             if (Settings.Global.getInt(cr, Settings.Global.ADB_ENABLED, 0) != 1) {
                 Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1);
+                Protokoll.add(c, "USB-Debugging war aus – eingeschaltet");
             }
         } catch (Throwable ignored) {
         }
@@ -223,12 +232,14 @@ final class RealKey {
             // 0 = ADB-Freigaben verfallen nie (Entwickleroption „ADB-Autorisierungszeitlimit deaktivieren“)
             if (Settings.Global.getLong(cr, "adb_allowed_connection_time", -1) != 0) {
                 Settings.Global.putLong(cr, "adb_allowed_connection_time", 0);
+                Protokoll.add(c, "ADB-Freigabe auf „verfällt nie“ gestellt");
             }
         } catch (Throwable ignored) {
         }
         try {
             if (Settings.Global.getInt(cr, "adb_wifi_enabled", 0) != 1) {
                 Settings.Global.putInt(cr, "adb_wifi_enabled", 1);
+                Protokoll.add(c, "Debugging über WLAN war aus – eingeschaltet");
                 Thread.sleep(3000);
             }
         } catch (InterruptedException e) {
@@ -242,6 +253,7 @@ final class RealKey {
             target = AdbClient.findTlsPort(c, 5000);
             if (target == null) Thread.sleep(2000);
         }
+        Protokoll.add(c, AdbClient.lastNote);
         return target;
     }
 
@@ -275,10 +287,13 @@ final class RealKey {
             if (r == null || !r.contains("TVMAPPER_OK")) return "Schlüssel ist auf diesem Gerät nicht gekoppelt";
             key.save(c);
             markAdbUsed(c);
+            Protokoll.add(c, "ADB-Schlüssel geprüft und übernommen");
             return null;
         } catch (Throwable t) {
             String m = t.getMessage();
-            return "Schlüssel abgelehnt: " + (m != null ? m : t.getClass().getSimpleName());
+            String err = "Schlüssel abgelehnt: " + (m != null ? m : t.getClass().getSimpleName());
+            Protokoll.add(c, err);
+            return err;
         }
     }
 
@@ -290,14 +305,21 @@ final class RealKey {
      */
     static boolean ensure(Context ctx) {
         Context c = ctx.getApplicationContext();
+        appCtx = c;
         synchronized (RealKey.class) {
             try {
                 // Läuft schon in der richtigen Version?
+                seenOtherVersion = null;
                 if (ping(c)) {
                     status = "aktiv";
                     return true;
                 }
                 active = false;
+                if (seenOtherVersion != null) {
+                    Protokoll.add(c, "Altes Hilfsprogramm (Version " + seenOtherVersion + ") läuft noch – wird ersetzt");
+                } else {
+                    Protokoll.add(c, "Hilfsprogramm antwortet nicht");
+                }
 
                 if (!AdbKey.exists(c)) {
                     status = "nicht eingerichtet – Termux-Befehl nötig (siehe rechts)";
@@ -323,7 +345,9 @@ final class RealKey {
                 String pattern = clsHead + "[S]erver";               // passt nicht auf die eigene Shell
                 // 1) alte/fremde Hilfsprogramme beenden  2) neu starten (bewährter Befehl)
                 // 3) 2 s warten, damit es sich von der Sitzung löst  4) Port prüfen
-                String cmd = "pkill -f '" + pattern + "' 2>/dev/null; sleep 0.5; "
+                String cmd = "echo VORHER=$(pgrep -f '" + pattern + "' | wc -l); "
+                        + "pkill -f '" + pattern + "' 2>/dev/null; sleep 0.5; "
+                        + "echo NACHHER=$(pgrep -f '" + pattern + "' | wc -l); "
                         + "C=" + clsHead + "; "
                         + "CLASSPATH=$(pm path " + pkg + " | head -1 | cut -d: -f2) setsid app_process /system/bin "
                         + "${C}Server " + token(c) + " " + PORT + " " + version(c)
@@ -333,12 +357,14 @@ final class RealKey {
                 String output = adbShell(key, target, cmd);
                 markAdbUsed(c);
                 output = output == null ? "" : output.trim();
+                Protokoll.add(c, "Startbefehl: " + output.replace('\n', ' '));
 
                 // Warten, bis es antwortet
                 for (int i = 0; i < 20; i++) {
                     if (ping(c)) {
                         status = "aktiv";
                         lastEnsureFail = 0;
+                        Protokoll.add(c, "Hilfsprogramm aktiv (Version " + version(c) + ")");
                         return true;
                     }
                     Thread.sleep(300);
@@ -364,8 +390,14 @@ final class RealKey {
 
     private static boolean fail() {
         lastEnsureFail = System.currentTimeMillis();
+        try {
+            if (appCtx != null) Protokoll.add(appCtx, "Echte Taste: " + status);
+        } catch (Throwable ignored) {
+        }
         return false;
     }
+
+    private static volatile Context appCtx;
 
     /**
      * Frischt die ADB-Freigabe ca. einmal täglich auf (kurze Test-Verbindung),
@@ -381,7 +413,10 @@ final class RealKey {
                 Object[] target = prepareAdb(c);
                 if (target == null) return;
                 String r = adbShell(AdbKey.load(c), target, "echo TVMAPPER_OK");
-                if (r != null && r.contains("TVMAPPER_OK")) markAdbUsed(c);
+                if (r != null && r.contains("TVMAPPER_OK")) {
+                    markAdbUsed(c);
+                    Protokoll.add(c, "ADB-Freigabe aufgefrischt");
+                }
             }
         } catch (Throwable ignored) {
         }
@@ -415,6 +450,7 @@ final class RealKey {
 
     /** Wie ensure(), startet aber auch neu, wenn das alte Hilfsprogramm noch antwortet. */
     private static void forceStart(Context app) {
+        Protokoll.add(app, "Neustart der echten Taste per Knopf");
         synchronized (lock) {
             if (connect(app) != null) {
                 try {
@@ -445,6 +481,7 @@ final class RealKey {
      */
     static void keepAlive(Context c) {
         if (ping(c)) return;
+        Protokoll.add(c, "Minuten-Prüfung: Hilfsprogramm antwortet nicht");
         if (lastEnsureFail != 0 && System.currentTimeMillis() - lastEnsureFail < 5 * 60_000) return;
         if (busy.get()) return;
         ensure(c);

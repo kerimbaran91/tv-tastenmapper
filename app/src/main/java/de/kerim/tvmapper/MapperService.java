@@ -31,6 +31,7 @@ public class MapperService extends AccessibilityService {
     protected void onServiceConnected() {
         running = true;
         instance = this;
+        Protokoll.add(this, "Dienst gestartet");
         try {
             Prefs.load(this);
         } catch (Throwable ignored) {
@@ -270,6 +271,7 @@ public class MapperService extends AccessibilityService {
 
     @Override
     public boolean onUnbind(Intent intent) {
+        Protokoll.add(this, "Dienst vom System beendet");
         running = false;
         instance = null;
         unregisterNetworkWatch();

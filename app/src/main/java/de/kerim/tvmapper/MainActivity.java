@@ -38,7 +38,7 @@ public class MainActivity extends Activity {
     /** Ab Android 13 sperrt das System die Bedienungshilfe für nachinstallierte Apps oft. */
     private static final boolean RESTRICTED = Build.VERSION.SDK_INT >= 33;
 
-    private TextView tvService, tvHeal, tvKey, tvReal, tvLearn, tvUpdate, tvDiag, tvDiagTitle;
+    private TextView tvService, tvHeal, tvKey, tvReal, tvLearn, tvUpdate, tvDiag, tvDiagTitle, tvLog;
     private Button btnLearn, btnToggle, btnUpdate, btnDiag, btnMethod;
     private LinearLayout diagCard;
     private volatile Updater.Release latest;
@@ -205,6 +205,7 @@ public class MainActivity extends Activity {
 
         btnToggle.setText(Prefs.isEnabled(this) ? "Umbelegung: AN" : "Umbelegung: AUS");
         btnMethod.setText("Methode: " + Prefs.methodName(Prefs.getMethod(this)));
+        tvLog.setText(Protokoll.text(this));
 
         long dleft = Prefs.diagRemainingMs();
         if (dleft > 0) {
@@ -475,6 +476,16 @@ public class MainActivity extends Activity {
         diagCard.addView(text("[Dienst] = kommt beim Dienst an → lässt sich umbelegen.\n"
                 + "Erscheint bei TV+ gar nichts, fängt das System die Taste vorher ab.", 13, MUTED));
 
+        LinearLayout logCard = card();
+        TextView lh = text("Protokoll (letzte 20 Ereignisse)", 16, ACCENT);
+        lh.setTypeface(Typeface.DEFAULT_BOLD);
+        logCard.addView(lh);
+        logCard.addView(space(6));
+        tvLog = text("", 12, TEXT);
+        tvLog.setTypeface(Typeface.MONOSPACE);
+        logCard.addView(tvLog);
+        rightCol.addView(logCard);
+        rightCol.addView(space(16));
         rightCol.addView(diagCard);
         rightCol.addView(space(16));
         LinearLayout right = card();

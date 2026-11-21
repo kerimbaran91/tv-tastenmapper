@@ -102,6 +102,7 @@ final class Healer {
                 return true;
             }
 
+            Protokoll.add(c, listed ? "Dienst hing – wird neu gestartet" : "Dienst war aus – wird eingeschaltet");
             if (listed) {
                 // Eingetragen, aber hängt: einmal aus- und wieder einschalten
                 write(c, others);

@@ -63,7 +63,11 @@ final class AdbClient {
      * Jeder gefundene Port wird erst geprüft (ist er wirklich offen?), denn die Systemeigenschaft
      * kann einen veralteten Port enthalten.
      */
+    /** Kurze Notiz zur letzten Port-Suche (fürs Protokoll). */
+    static volatile String lastNote = "";
+
     static Object[] findTlsPort(Context c, long timeoutMs) {
+        String note = "";
         // 1) Systemeigenschaft (schnell, aber evtl. veraltet → prüfen)
         try {
             Class<?> sp = Class.forName("android.os.SystemProperties");
@@ -72,7 +76,11 @@ final class AdbClient {
                 int p = Integer.parseInt(v.trim());
                 if (p > 0) {
                     Object[] ok = probe(p, null);
-                    if (ok != null) return ok;
+                    if (ok != null) {
+                        lastNote = "ADB-Port " + p + " gefunden (" + ok[0] + ")";
+                        return ok;
+                    }
+                    note = "Port " + p + " veraltet, ";
                 }
             }
         } catch (Throwable ignored) {
@@ -82,10 +90,18 @@ final class AdbClient {
             Object[] found = discover(c, timeoutMs);
             if (found != null) {
                 Object[] ok = probe((Integer) found[1], (String) found[0]);
-                if (ok != null) return ok;
+                if (ok != null) {
+                    lastNote = note + "Netzwerksuche: ADB-Port " + found[1] + " gefunden (" + ok[0] + ")";
+                    return ok;
+                }
+                note += "Port " + found[1] + " nicht erreichbar, ";
+            } else {
+                note += "Netzwerksuche ohne Ergebnis, ";
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            note += "Netzwerksuche Fehler, ";
         }
+        lastNote = note + "kein ADB-Port";
         return null;
     }
 
