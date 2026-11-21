@@ -35,6 +35,15 @@ nachinstallierte Apps – deshalb erfolgt die Einrichtung per ADB; die App schal
    Steht dort `[Dienst]`, lässt sich die Taste umbelegen.
 6. **TV+-Taste anlernen** → TV+ drücken. Fertig.
 
+## Echte Play/Pause-Taste
+Damit TV+ eine echte Play/Pause-Taste auslöst (funktioniert in YouTube, TiviMate, SmartTube …),
+startet die App ein kleines Hilfsprogramm mit ADB-Rechten. Einmalig in Termux (nach `adb pair`/`adb connect`):
+```
+adb shell am start -n de.kerim.tvmapper/.MainActivity --es adbkey "$(base64 -w0 ~/.android/adbkey)"
+```
+Die App übernimmt damit den bereits gekoppelten ADB-Schlüssel, schaltet „Debugging über WLAN“ nach
+Neustarts selbst ein und startet das Hilfsprogramm automatisch. Läuft es einmal nicht, wird die Kopfhörer-Taste genutzt.
+
 ## Updates
 In der App unter **Updates** → „Nach Updates suchen“. Die App holt die neueste Version von GitHub und öffnet den Installer.
 Falls die Installation nicht erlaubt ist, einmalig:

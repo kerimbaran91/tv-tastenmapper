@@ -38,7 +38,7 @@ public class MainActivity extends Activity {
     /** Ab Android 13 sperrt das System die Bedienungshilfe für nachinstallierte Apps oft. */
     private static final boolean RESTRICTED = Build.VERSION.SDK_INT >= 33;
 
-    private TextView tvService, tvHeal, tvKey, tvLearn, tvUpdate, tvDiag, tvDiagTitle;
+    private TextView tvService, tvHeal, tvKey, tvReal, tvLearn, tvUpdate, tvDiag, tvDiagTitle;
     private Button btnLearn, btnToggle, btnUpdate, btnDiag, btnMethod;
     private LinearLayout diagCard;
     private volatile Updater.Release latest;
@@ -67,7 +67,32 @@ public class MainActivity extends Activity {
         Prefs.load(this);
         setContentView(buildUi());
         Watchdog.schedule(this);
+        handleKeyIntent(getIntent());
         checkForUpdate(false);
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleKeyIntent(intent);
+    }
+
+    /** Übernimmt den ADB-Schlüssel, den Termux per „am start … --es adbkey …“ schickt. */
+    private void handleKeyIntent(Intent intent) {
+        if (intent == null) return;
+        String b64 = intent.getStringExtra("adbkey");
+        if (b64 == null) return;
+        intent.removeExtra("adbkey");
+        try {
+            String pem = new String(android.util.Base64.decode(b64.trim(), android.util.Base64.DEFAULT), "UTF-8");
+            AdbKey.importPem(this, pem);
+            Toast.makeText(this, "ADB-Schlüssel übernommen – echte Taste wird gestartet …", Toast.LENGTH_LONG).show();
+            RealKey.checkAsync(this, true);
+        } catch (Throwable t) {
+            Toast.makeText(this, "Schlüssel ungültig: " + t.getMessage(), Toast.LENGTH_LONG).show();
+        }
+        refresh();
     }
 
     @Override
@@ -82,6 +107,7 @@ public class MainActivity extends Activity {
         }
         // Falls die ADB-Berechtigung inzwischen erteilt wurde: Dienst gleich einschalten
         new Thread(() -> Healer.ensure(getApplicationContext(), false)).start();
+        if (Prefs.getMethod(this) == Prefs.METHOD_REAL) RealKey.checkAsync(this, false);
         handler.post(ticker);
     }
 
@@ -141,6 +167,18 @@ public class MainActivity extends Activity {
 
         setStatus(tvKey, "TV+-Taste: " + Prefs.describeLearned(this),
                 Prefs.hasLearned(this) ? OK : WARN);
+
+        if (Prefs.getMethod(this) != Prefs.METHOD_REAL) {
+            setStatus(tvReal, "Echte Play/Pause-Taste: nicht gewählt (Methode: "
+                    + Prefs.methodName(Prefs.getMethod(this)) + ")", MUTED);
+        } else if (RealKey.active) {
+            setStatus(tvReal, "Echte Play/Pause-Taste: aktiv", OK);
+        } else {
+            String st = RealKey.status;
+            boolean starting = st.startsWith("wird gestartet") || st.startsWith("noch nicht");
+            setStatus(tvReal, "Echte Play/Pause-Taste: " + st
+                    + (starting ? "" : " – solange Kopfhörer-Taste"), starting ? WARN : BAD);
+        }
 
         long left = Prefs.learningRemainingMs();
         if (left > 0) {
@@ -237,6 +275,7 @@ public class MainActivity extends Activity {
     private void onMethodClicked() {
         int m = (Prefs.getMethod(this) + 1) % Prefs.METHOD_COUNT;
         Prefs.setMethod(this, m);
+        if (m == Prefs.METHOD_REAL) RealKey.checkAsync(this, false);
         Toast.makeText(this, "Methode: " + Prefs.methodName(m) + " – jetzt im Video mit TV+ testen",
                 Toast.LENGTH_LONG).show();
         refresh();
@@ -363,6 +402,9 @@ public class MainActivity extends Activity {
         statusCard.addView(tvHeal);
         statusCard.addView(space(8));
         statusCard.addView(tvKey);
+        statusCard.addView(space(8));
+        tvReal = text("", 17, Color.WHITE);
+        statusCard.addView(tvReal);
         left.addView(statusCard);
         left.addView(space(12));
 
@@ -377,12 +419,17 @@ public class MainActivity extends Activity {
         btnMethod = button("Methode", v -> onMethodClicked());
         Button btnActivate = button("Dienst aktivieren", v -> onActivateClicked());
         Button btnTest = button("Play/Pause testen", v -> onTestClicked());
+        Button btnRealRestart = button("Echte Taste neu starten", v -> {
+            Toast.makeText(this, "Echte Taste wird neu gestartet …", Toast.LENGTH_SHORT).show();
+            RealKey.checkAsync(this, true);
+        });
         left.addView(btnLearn);
         left.addView(btnMethod);
         left.addView(btnDiag);
         left.addView(btnToggle);
         left.addView(btnActivate);
         left.addView(btnTest);
+        left.addView(btnRealRestart);
 
         // Updates
         left.addView(space(20));
@@ -433,6 +480,8 @@ public class MainActivity extends Activity {
         right.addView(mono("adb connect <IP-des-Sticks>\n"
                 + "adb shell pm grant " + pkg + " android.permission.WRITE_SECURE_SETTINGS\n"
                 + "adb shell appops set " + pkg + " REQUEST_INSTALL_PACKAGES allow"));
+        right.addView(text("\nFür die echte Play/Pause-Taste einmalig zusätzlich (Termux, nach dem Koppeln):", 15, TEXT));
+        right.addView(mono("adb shell am start -n " + pkg + "/.MainActivity --es adbkey \"$(base64 -w0 ~/.android/adbkey)\""));
         right.addView(text("\nDanach diese App einmal öffnen – sie schaltet ihren Dienst selbst ein "
                 + "und hält ihn nach jedem Neustart und Update aktiv.\n\n"
                 + "Dann: „Tasten-Diagnose“ drücken und TV+ drücken. Steht dort [Dienst], klappt die Umbelegung.\n\n"

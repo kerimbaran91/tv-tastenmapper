@@ -11,6 +11,7 @@ import android.content.Context;
 public class Watchdog extends JobService {
     private static final int JOB_PERIODIC = 1001;
     private static final int JOB_SOON = 1002;
+    private static final int JOB_LATER = 1003;
 
     /** Regelmäßige Prüfung einplanen (übersteht Neustarts). */
     static void schedule(Context c) {
@@ -38,12 +39,27 @@ public class Watchdog extends JobService {
         }
     }
 
+    /** Zweite Prüfung ca. 3 Minuten nach dem Start (falls WLAN länger braucht). */
+    static void scheduleLater(Context c) {
+        try {
+            JobScheduler js = c.getSystemService(JobScheduler.class);
+            if (js == null) return;
+            js.schedule(new JobInfo.Builder(JOB_LATER, new ComponentName(c, Watchdog.class))
+                    .setMinimumLatency(180_000)
+                    .setOverrideDeadline(300_000)
+                    .build());
+        } catch (Throwable ignored) {
+        }
+    }
+
     @Override
     public boolean onStartJob(final JobParameters params) {
         new Thread(() -> {
             try {
                 Healer.ensure(getApplicationContext(), true);
                 schedule(getApplicationContext());
+                Prefs.load(getApplicationContext());
+                if (Prefs.method == Prefs.METHOD_REAL) RealKey.ensure(getApplicationContext());
             } catch (Throwable ignored) {
             }
             jobFinished(params, false);

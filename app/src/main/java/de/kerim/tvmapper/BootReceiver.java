@@ -13,6 +13,7 @@ public class BootReceiver extends BroadcastReceiver {
             Healer.ensure(app, false);
             Watchdog.schedule(app);
             Watchdog.scheduleSoon(app);
+            Watchdog.scheduleLater(app);
         } catch (Throwable ignored) {
         }
     }

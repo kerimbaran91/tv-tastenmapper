@@ -6,6 +6,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
 import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
@@ -40,6 +43,10 @@ public class MapperService extends AccessibilityService {
         }
         try {
             Watchdog.schedule(this);
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (Prefs.method == Prefs.METHOD_REAL) RealKey.ensureAsync(this);
         } catch (Throwable ignored) {
         }
     }
@@ -100,32 +107,63 @@ public class MapperService extends AccessibilityService {
         }
     }
 
+    // Hintergrund-Thread für die echte Taste (Netzwerk darf nicht im Haupt-Thread laufen)
+    private static HandlerThread bgThread;
+    private static Handler bg;
+    private static final Handler main = new Handler(Looper.getMainLooper());
+
+    private static synchronized Handler bg() {
+        if (bg == null) {
+            bgThread = new HandlerThread("echte-taste");
+            bgThread.start();
+            bg = new Handler(bgThread.getLooper());
+        }
+        return bg;
+    }
+
     /**
      * Sendet Play/Pause mit der gewählten Methode.
-     * Kopfhörer- und OK-Taste werden vom System als echter Tastendruck an die App im Vordergrund geschickt.
-     * @return true, wenn gesendet
+     * Echte Taste: über das Hilfsprogramm; klappt das nicht, sofort Rückfall auf die Kopfhörer-Taste.
      */
-    static boolean sendPlayPause(Context c, MapperService svc) {
+    static void sendPlayPause(Context c, MapperService svc) {
+        final Context app = c.getApplicationContext();
         int m = Prefs.method;
+        if (m == Prefs.METHOD_REAL) {
+            bg().post(() -> {
+                boolean ok = false;
+                try {
+                    ok = RealKey.pressKey(app, RealKey.KEYCODE_MEDIA_PLAY_PAUSE);
+                } catch (Throwable ignored) {
+                }
+                if (!ok) {
+                    main.post(() -> sendSystem(app, MapperService.instance, Prefs.METHOD_HEADSET));
+                    RealKey.ensureAsync(app);
+                }
+            });
+            return;
+        }
+        sendSystem(app, svc, m);
+    }
+
+    private static void sendSystem(Context c, MapperService svc, int m) {
         if (svc != null && m != Prefs.METHOD_SESSION) {
             try {
                 if (m == Prefs.METHOD_OK && Build.VERSION.SDK_INT >= 33) {
-                    if (svc.performGlobalAction(GA_DPAD_CENTER)) return true;
+                    if (svc.performGlobalAction(GA_DPAD_CENTER)) return;
                 } else if (Build.VERSION.SDK_INT >= 31) {
-                    if (svc.performGlobalAction(GA_HEADSETHOOK)) return true;
+                    if (svc.performGlobalAction(GA_HEADSETHOOK)) return;
                 }
             } catch (Throwable ignored) {
             }
         }
         // Rückfall: Medien-Sitzung
         AudioManager am = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) return false;
+        if (am == null) return;
         long now = SystemClock.uptimeMillis();
         am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0));
         am.dispatchMediaKeyEvent(new KeyEvent(now, now + 50, KeyEvent.ACTION_UP,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 0));
-        return true;
     }
 
     @Override
