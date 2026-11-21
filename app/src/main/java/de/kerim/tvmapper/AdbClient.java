@@ -58,23 +58,56 @@ final class AdbClient {
 
     // ---------------- Port finden ----------------
 
-    /** Sucht den Port von „Debugging über WLAN“ auf diesem Gerät. Liefert {host, port} oder null. */
+    /**
+     * Sucht den Port von „Debugging über WLAN“ auf diesem Gerät. Liefert {host, port} oder null.
+     * Jeder gefundene Port wird erst geprüft (ist er wirklich offen?), denn die Systemeigenschaft
+     * kann einen veralteten Port enthalten.
+     */
     static Object[] findTlsPort(Context c, long timeoutMs) {
-        // 1) Systemeigenschaft (falls lesbar)
+        // 1) Systemeigenschaft (schnell, aber evtl. veraltet → prüfen)
         try {
             Class<?> sp = Class.forName("android.os.SystemProperties");
             String v = (String) sp.getMethod("get", String.class).invoke(null, "service.adb.tls.port");
-            if (v != null && !v.trim().isEmpty() && Integer.parseInt(v.trim()) > 0) {
-                return new Object[]{"127.0.0.1", Integer.parseInt(v.trim())};
+            if (v != null && !v.trim().isEmpty()) {
+                int p = Integer.parseInt(v.trim());
+                if (p > 0) {
+                    Object[] ok = probe(p, null);
+                    if (ok != null) return ok;
+                }
             }
         } catch (Throwable ignored) {
         }
-        // 2) Netzwerk-Suche (mDNS) nach dem eigenen Gerät
+        // 2) Netzwerk-Suche (mDNS) nach dem eigenen Gerät – liefert den aktuellen Port
         try {
-            return discover(c, timeoutMs);
-        } catch (Throwable t) {
-            return null;
+            Object[] found = discover(c, timeoutMs);
+            if (found != null) {
+                Object[] ok = probe((Integer) found[1], (String) found[0]);
+                if (ok != null) return ok;
+            }
+        } catch (Throwable ignored) {
         }
+        return null;
+    }
+
+    /** Prüft, ob auf dem Port wirklich etwas lauscht – erst intern (127.0.0.1), dann über die WLAN-Adresse. */
+    private static Object[] probe(int port, String preferredHost) {
+        List<String> hosts = new ArrayList<>();
+        hosts.add("127.0.0.1");
+        if (preferredHost != null && !hosts.contains(preferredHost)) hosts.add(preferredHost);
+        for (InetAddress a : localAddresses()) {
+            if (a instanceof Inet4Address && !a.isLoopbackAddress()) {
+                String h = a.getHostAddress();
+                if (!hosts.contains(h)) hosts.add(h);
+            }
+        }
+        for (String h : hosts) {
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(h, port), 600);
+                return new Object[]{h, port};
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
     }
 
     private static Object[] discover(Context c, long timeoutMs) throws Exception {
@@ -126,9 +159,7 @@ final class AdbClient {
         List<InetAddress> out = new ArrayList<>();
         try {
             for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                for (InetAddress a : Collections.list(ni.getInetAddresses())) {
-                    if (a instanceof Inet4Address || !a.isLinkLocalAddress()) out.add(a);
-                }
+                out.addAll(Collections.list(ni.getInetAddresses()));
             }
         } catch (Throwable ignored) {
         }
